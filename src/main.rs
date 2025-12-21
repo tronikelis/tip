@@ -54,6 +54,7 @@ impl UiQuery {
 
 struct UiState {
     query: UiQuery,
+    process_stdout: Option<Vec<u8>>,
     terminal: terminal::TerminalWriter,
     event_rx: sync::mpsc::Receiver<UiEvent>,
     event_tx: sync::mpsc::SyncSender<UiEvent>,
@@ -69,6 +70,7 @@ impl UiState {
         terminal.enable_raw_mode();
         Ok(Self {
             query: UiQuery::new(query_tx),
+            process_stdout: None,
             terminal,
             event_rx,
             event_tx,
@@ -81,8 +83,19 @@ impl UiState {
         self.terminal
             .write_all(self.query.get_string().as_bytes())
             .map_err(|v| v.to_string())?;
+
+        if let Some(process_stdout) = &self.process_stdout {
+            self.terminal
+                .write_all("\n".as_bytes())
+                .map_err(|v| v.to_string())?;
+
+            self.terminal
+                .write_all(process_stdout)
+                .map_err(|v| v.to_string())?;
+        }
+
         self.terminal
-            .move_cursor_to_column(self.query.cursor_index + 1)
+            .move_cursor(1, self.query.cursor_index + 1)
             .map_err(|v| v.to_string())?;
 
         Ok(())
@@ -136,7 +149,9 @@ impl UiState {
             self.redraw()?;
             match self.event_rx.recv().map_err(|v| v.to_string()) {
                 Ok(event) => match event {
-                    UiEvent::SetStdout(stdout) => {}
+                    UiEvent::SetStdout(stdout) => {
+                        self.process_stdout = Some(stdout);
+                    }
                     UiEvent::TerminalInput(input) => {
                         self.handle_terminal_input(input);
                     }

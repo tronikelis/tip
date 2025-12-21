@@ -92,6 +92,10 @@ impl TerminalWriter {
         self.write_all(format!("\x1b[{}G", column).as_bytes())
     }
 
+    pub fn move_cursor(&mut self, line: usize, column: usize) -> io::Result<()> {
+        self.write_all(format!("\x1b[{};{}H", line, column).as_bytes())
+    }
+
     pub fn enable_raw_mode(&self) {
         enable_raw_mode(self.tty.as_raw_fd());
     }
