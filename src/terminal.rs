@@ -74,47 +74,83 @@ impl TerminalReader {
 pub struct TerminalWriter {
     tty: io::BufWriter<fs::File>,
     fd: i32,
+    original_termios: libc::termios,
 }
 
 impl TerminalWriter {
     pub fn new() -> io::Result<Self> {
         let tty = fs::File::create("/dev/tty")?;
         let fd = tty.as_raw_fd();
-        let tty = io::BufWriter::new(tty);
-        Ok(Self { tty, fd })
+
+        let mut tty = io::BufWriter::new(tty);
+        switch_to_alternate_terminal(&mut tty)?;
+
+        Ok(Self {
+            tty,
+            fd,
+            original_termios: unsafe { enable_raw_mode(fd) },
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.tty.flush()
     }
 
-    fn write_newline(&mut self) -> io::Result<()> {
-        self.write("\n".as_bytes())
+    fn newline_start(&mut self) -> io::Result<()> {
+        self.write("\r\n".as_bytes())
     }
 
-    pub fn write(&mut self, buf: &[u8]) -> io::Result<()> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<()> {
         self.tty.write_all(buf)
     }
 
-    pub fn clear(&mut self) -> io::Result<()> {
+    fn clear(&mut self) -> io::Result<()> {
         self.write("\x1b[2J\x1b[H".as_bytes())
     }
 
-    pub fn move_cursor_to_column(&mut self, column: usize) -> io::Result<()> {
-        self.write(format!("\x1b[{}G", column).as_bytes())
-    }
-
-    pub fn move_cursor(&mut self, line: usize, column: usize) -> io::Result<()> {
+    fn move_cursor(&mut self, line: usize, column: usize) -> io::Result<()> {
         self.write(format!("\x1b[{};{}H", line, column).as_bytes())
     }
 
-    pub fn enable_raw_mode(&self) {
-        enable_raw_mode(self.fd);
-    }
-
-    pub fn size(&self) -> libc::winsize {
+    fn size(&self) -> libc::winsize {
         get_terminal_size(self.fd)
     }
+}
+
+impl Drop for TerminalWriter {
+    fn drop(&mut self) {
+        unsafe {
+            disable_raw_mode(self.fd, self.original_termios);
+        }
+        switch_to_normal_terminal(&mut self.tty).unwrap();
+    }
+}
+
+// returns the original one
+unsafe fn enable_raw_mode(tty_fd: i32) -> libc::termios {
+    let mut original_termios = mem::MaybeUninit::<libc::termios>::uninit();
+    unsafe { libc::tcgetattr(tty_fd, original_termios.as_mut_ptr()) };
+    let original_termios = unsafe { original_termios.assume_init() };
+
+    let mut raw_termios = mem::MaybeUninit::<libc::termios>::uninit();
+    unsafe { libc::cfmakeraw(raw_termios.as_mut_ptr()) };
+    let raw_termios = unsafe { raw_termios.assume_init() };
+
+    unsafe { libc::tcsetattr(tty_fd, libc::TCSAFLUSH, &raw_termios) };
+
+    original_termios
+}
+
+fn switch_to_alternate_terminal<T: Write>(tty: &mut T) -> io::Result<()> {
+    tty.write_all("\x1b[?1049h\x1b[2J\x1b[H".as_bytes())
+}
+
+fn switch_to_normal_terminal<T: Write>(tty: &mut T) -> io::Result<()> {
+    tty.write_all("\x1b[2J\x1b[H\x1b[?1049l".as_bytes())
+}
+
+unsafe fn disable_raw_mode(tty_fd: i32, termios: libc::termios) {
+    unsafe { libc::tcsetattr(tty_fd, libc::TCSAFLUSH, &termios) };
 }
 
 pub fn isatty(fd: i32) -> bool {
@@ -126,17 +162,6 @@ pub fn get_terminal_size(tty_fd: i32) -> libc::winsize {
     let mut winsize = mem::MaybeUninit::<libc::winsize>::uninit();
     unsafe { libc::ioctl(tty_fd, libc::TIOCGWINSZ, winsize.as_mut_ptr()) };
     unsafe { winsize.assume_init() }
-}
-
-pub fn enable_raw_mode(tty_fd: i32) {
-    let mut termios = mem::MaybeUninit::<libc::termios>::uninit();
-    unsafe { libc::tcgetattr(tty_fd, termios.as_mut_ptr()) };
-    let mut termios = unsafe { termios.assume_init() };
-    termios.c_lflag &= !(libc::ECHO | libc::ICANON);
-
-    unsafe {
-        libc::tcsetattr(tty_fd, libc::TCSAFLUSH, &termios);
-    }
 }
 
 struct TerminalRenderState {
@@ -185,6 +210,7 @@ pub enum TerminalRendererEvent {
     Resize,
     Input(TerminalInput),
     Redraw,
+    Quit,
 }
 
 pub struct TerminalRenderer {
@@ -204,16 +230,26 @@ impl TerminalRenderer {
         event_tx: sync::mpsc::SyncSender<TerminalRendererEvent>,
         event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
     ) -> Self {
-        let (event_tx, event_rx) = sync::mpsc::sync_channel(0);
-
         let size_update_handle = thread::spawn({
             let event_tx = event_tx.clone();
-            let mut signals =
-                signal_hook::iterator::Signals::new(&[signal_hook::consts::SIGWINCH]).unwrap();
+            let mut signals = signal_hook::iterator::Signals::new(&[
+                signal_hook::consts::SIGWINCH,
+                signal_hook::consts::SIGINT,
+                signal_hook::consts::SIGTERM,
+            ])
+            .unwrap();
 
             move || {
-                for _ in &mut signals {
-                    event_tx.send(TerminalRendererEvent::Resize).unwrap();
+                for signal in &mut signals {
+                    match signal {
+                        libc::SIGWINCH => {
+                            event_tx.send(TerminalRendererEvent::Resize).unwrap();
+                        }
+                        libc::SIGINT | libc::SIGTERM => {
+                            event_tx.send(TerminalRendererEvent::Quit).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             }
         });
@@ -232,7 +268,6 @@ impl TerminalRenderer {
         });
 
         let terminal_writer = TerminalWriter::new().unwrap();
-        terminal_writer.enable_raw_mode();
         let size = terminal_writer.size();
 
         Self {
@@ -270,8 +305,8 @@ impl TerminalRenderer {
                 .unwrap();
         }
 
-        state.cursor_col = out.cursor_index + chevron.len() + 1;
         state.cursor_line = 1;
+        state.cursor_col = out.cursor_index + chevron.len() + 1;
     }
 
     fn render_component_stream(
@@ -279,7 +314,7 @@ impl TerminalRenderer {
         out: ComponentStreamOut,
         state: &mut TerminalRenderState,
     ) {
-        self.terminal_writer.write_newline().unwrap();
+        self.terminal_writer.newline_start().unwrap();
         state.left_lines -= 1;
         self.terminal_writer
             .write("-".repeat(self.size.ws_col as usize).as_bytes())
@@ -287,8 +322,8 @@ impl TerminalRenderer {
 
         let as_string = unsafe { String::from_utf8_unchecked(out.0) };
 
-        self.terminal_writer.write_newline().unwrap();
         for line in as_string.split("\n").take(state.left_lines as usize) {
+            self.terminal_writer.newline_start().unwrap();
             self.terminal_writer.write(line.as_bytes()).unwrap();
         }
         state.left_lines = 0;
@@ -329,6 +364,11 @@ impl TerminalRenderer {
             match self.event_rx.recv().unwrap() {
                 TerminalRendererEvent::Resize => self.handle_size(),
                 TerminalRendererEvent::Input(terminal_input) => {
+                    if let TerminalInput::Ctrl(ch) = &terminal_input {
+                        if *ch == b'c' {
+                            todo!("quit");
+                        }
+                    }
                     for comp in &mut self.components {
                         match comp {
                             Component::Prompt(x) => x.input(&terminal_input),
@@ -337,6 +377,9 @@ impl TerminalRenderer {
                     }
                 }
                 TerminalRendererEvent::Redraw => {}
+                TerminalRendererEvent::Quit => {
+                    todo!("quit");
+                }
             }
         }
     }

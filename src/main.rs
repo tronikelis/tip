@@ -1,8 +1,7 @@
 use std::{
-    env, fs,
+    env,
     io::{self, Read, Write},
-    os::fd::AsRawFd,
-    process, sync, thread, time,
+    process, sync, thread,
 };
 
 mod terminal;
@@ -92,14 +91,49 @@ impl UiWaitingProcess {
         let handle = thread::spawn({
             let stdout = stdout.clone();
             move || {
+                let mut child_handle: Option<(u32, thread::JoinHandle<()>)> = None;
                 loop {
                     let query = query_rx.recv().unwrap();
-                    *stdout.lock().unwrap() = query.as_bytes().to_vec();
-                    // do some work
-                    thread::sleep(time::Duration::from_secs(2));
-                    event_tx
-                        .send(terminal::TerminalRendererEvent::Redraw)
+                    if let Some(child_handle) = child_handle {
+                        unsafe {
+                            libc::kill(child_handle.0 as i32, 9);
+                        }
+                        child_handle.1.join().unwrap();
+                    }
+
+                    let mut child = process::Command::new(cmd.clone())
+                        .args(args.clone().iter())
+                        .arg(query)
+                        .stdin(process::Stdio::piped())
+                        .stdout(process::Stdio::piped())
+                        .stderr(process::Stdio::piped())
+                        .spawn()
                         .unwrap();
+
+                    child_handle = Some((
+                        child.id(),
+                        thread::spawn({
+                            let input = input.clone();
+                            let ui_event_tx = event_tx.clone();
+                            let stdout = stdout.clone();
+                            move || {
+                                let mut child_stdin = child.stdin.take().unwrap();
+                                let write_stdin =
+                                    thread::spawn(move || child_stdin.write_all(&input));
+
+                                let child_stdout = read_to_end(child.stdout.take().unwrap());
+                                let _ = write_stdin.join();
+
+                                child.wait().unwrap();
+                                if let Ok(child_stdout) = child_stdout {
+                                    *stdout.lock().unwrap() = child_stdout;
+                                    ui_event_tx
+                                        .send(terminal::TerminalRendererEvent::Redraw)
+                                        .unwrap();
+                                }
+                            }
+                        }),
+                    ));
                 }
             }
         });
@@ -120,58 +154,6 @@ impl terminal::ComponentStream for UiWaitingProcess {
     }
 }
 
-// fn launch_waiting_process(
-//     cmd: String,
-//     args: Vec<String>,
-//     input: Vec<u8>,
-//     query_rx: sync::mpsc::Receiver<String>,
-//     ui_event_tx: sync::mpsc::SyncSender<UiEvent>,
-// ) -> thread::JoinHandle<()> {
-//     let input = sync::Arc::new(input);
-//     let args = sync::Arc::new(args);
-//     thread::spawn(move || {
-//         let mut child_handle: Option<(u32, thread::JoinHandle<()>)> = None;
-//         loop {
-//             let query = query_rx.recv().unwrap();
-//             if let Some(child_handle) = child_handle {
-//                 unsafe {
-//                     libc::kill(child_handle.0 as i32, 9);
-//                 }
-//                 child_handle.1.join().unwrap();
-//             }
-//
-//             let mut child = process::Command::new(cmd.clone())
-//                 .args(args.clone().iter())
-//                 .arg(query)
-//                 .stdin(process::Stdio::piped())
-//                 .stdout(process::Stdio::piped())
-//                 .stderr(process::Stdio::piped())
-//                 .spawn()
-//                 .unwrap();
-//
-//             child_handle = Some((
-//                 child.id(),
-//                 thread::spawn({
-//                     let input = input.clone();
-//                     let ui_event_tx = ui_event_tx.clone();
-//                     move || {
-//                         let mut child_stdin = child.stdin.take().unwrap();
-//                         let write_stdin = thread::spawn(move || child_stdin.write_all(&input));
-//
-//                         let child_stdout = read_to_end(child.stdout.take().unwrap());
-//                         let _ = write_stdin.join();
-//
-//                         child.wait().unwrap();
-//                         if let Ok(child_stdout) = child_stdout {
-//                             ui_event_tx.send(UiEvent::SetStdout(child_stdout)).unwrap();
-//                         }
-//                     }
-//                 }),
-//             ));
-//         }
-//     })
-// }
-
 fn read_to_end<T: Read>(reader: T) -> io::Result<Vec<u8>> {
     let mut buf = Vec::new();
     io::BufReader::new(reader).read_to_end(&mut buf)?;
@@ -185,15 +167,15 @@ fn main() {
     }
     let stdin_input = read_to_end(io::stdin()).unwrap();
 
-    let (query_tx, query_rx) = sync::mpsc::channel();
+    let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
     let (ui_event_tx, ui_event_rx) = sync::mpsc::sync_channel(0);
 
     terminal::TerminalRenderer::new(
         vec![
             terminal::Component::Prompt(Box::new(UiPrompt::new(query_tx))),
             terminal::Component::Stream(Box::new(UiWaitingProcess::new(
-                "jq".to_string(),
-                Vec::new(),
+                env::args().skip(1).next().unwrap(),
+                env::args().skip(2).collect(),
                 stdin_input,
                 ui_event_tx.clone(),
                 query_rx,
