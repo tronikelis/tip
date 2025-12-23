@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, anyhow};
 use std::{
     env,
     io::{self, Read, Write},
@@ -32,22 +33,24 @@ impl UiPrompt {
         self.cursor_index = cursor_index.max(0).min(self.query.len() as isize) as usize;
     }
 
-    fn add_character(&mut self, ch: char) {
+    fn add_character(&mut self, ch: char) -> Result<()> {
         self.query.insert(self.cursor_index, ch);
         self.cursor_index += 1;
 
-        self.tx.send(self.get_string()).unwrap();
+        self.tx.send(self.get_string())?;
+        Ok(())
     }
 
-    fn delete_character(&mut self) {
+    fn delete_character(&mut self) -> Result<()> {
         if self.cursor_index == 0 {
-            return;
+            return Ok(());
         }
 
         self.query.remove(self.cursor_index - 1);
         self.cursor_index -= 1;
 
-        self.tx.send(self.get_string()).unwrap();
+        self.tx.send(self.get_string())?;
+        Ok(())
     }
 }
 
@@ -59,21 +62,26 @@ impl terminal::ComponentPrompt for UiPrompt {
         }
     }
 
-    fn input(&mut self, input: &terminal::TerminalInput) {
+    fn input(&mut self, input: &terminal::TerminalInput) -> Result<()> {
         match input {
-            terminal::TerminalInput::Delete => self.delete_character(),
-            terminal::TerminalInput::Printable(ch) => self.add_character(*ch as char),
+            terminal::TerminalInput::Delete => {
+                self.delete_character()?;
+            }
+            terminal::TerminalInput::Printable(ch) => {
+                self.add_character(*ch as char)?;
+            }
             terminal::TerminalInput::Escape(escape) => match escape {
                 terminal::TerminalEscape::LeftArrow => self.move_cursor(-1),
                 terminal::TerminalEscape::RightArrow => self.move_cursor(1),
             },
             _ => {}
         }
+
+        Ok(())
     }
 }
 
 struct UiWaitingProcess {
-    handle: thread::JoinHandle<()>,
     stdout: sync::Arc<sync::Mutex<Vec<u8>>>,
 }
 
@@ -84,14 +92,24 @@ impl UiWaitingProcess {
         input: Vec<u8>,
         redraw_tx: sync::mpsc::SyncSender<()>,
         query_rx: sync::mpsc::Receiver<String>,
-    ) -> Self {
+    ) -> (Self, thread::JoinHandle<()>) {
         let stdout = sync::Arc::new(sync::Mutex::new(Vec::new()));
         let handle = thread::spawn({
             let stdout = stdout.clone();
             move || {
                 let mut child_handle: Option<(u32, thread::JoinHandle<()>)> = None;
                 loop {
-                    let query = query_rx.recv().unwrap();
+                    let Ok(query) = query_rx.recv() else {
+                        if let Some(child_handle) = child_handle {
+                            unsafe {
+                                libc::kill(child_handle.0 as i32, 9);
+                            }
+                            child_handle.1.join().unwrap();
+                        }
+
+                        break;
+                    };
+
                     if let Some(child_handle) = child_handle {
                         unsafe {
                             libc::kill(child_handle.0 as i32, 9);
@@ -99,14 +117,21 @@ impl UiWaitingProcess {
                         child_handle.1.join().unwrap();
                     }
 
-                    let mut child = process::Command::new(cmd.clone())
+                    let mut child = match process::Command::new(cmd.clone())
                         .args(args.clone().iter())
                         .arg(query)
                         .stdin(process::Stdio::piped())
                         .stdout(process::Stdio::piped())
                         .stderr(process::Stdio::piped())
                         .spawn()
-                        .unwrap();
+                    {
+                        Ok(v) => v,
+                        Err(err) => {
+                            *stdout.lock().unwrap() = err.to_string().as_bytes().to_vec();
+                            let _ = redraw_tx.send(());
+                            break;
+                        }
+                    };
 
                     child_handle = Some((
                         child.id(),
@@ -120,12 +145,12 @@ impl UiWaitingProcess {
                                     thread::spawn(move || child_stdin.write_all(&input));
 
                                 let child_stdout = read_to_end(child.stdout.take().unwrap());
-                                let _ = write_stdin.join();
+                                let _ = write_stdin.join().unwrap(); // ignore write error
 
-                                child.wait().unwrap();
+                                let Ok(_) = child.wait() else { return };
                                 if let Ok(child_stdout) = child_stdout {
                                     *stdout.lock().unwrap() = child_stdout;
-                                    redraw_tx.send(()).unwrap();
+                                    let _ = redraw_tx.send(());
                                 }
                             }
                         }),
@@ -134,12 +159,7 @@ impl UiWaitingProcess {
             }
         });
 
-        Self { handle, stdout }
-    }
-
-    // todo: this isn't called anywhere
-    fn wait(self) {
-        self.handle.join().unwrap()
+        (Self { stdout }, handle)
     }
 }
 
@@ -150,34 +170,47 @@ impl terminal::ComponentData for UiWaitingProcess {
     }
 }
 
-fn read_to_end<T: Read>(reader: T) -> io::Result<Vec<u8>> {
+fn read_to_end<T: Read>(reader: T) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     io::BufReader::new(reader).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
-fn main() {
+fn main_err() -> Result<()> {
     if terminal::isatty(libc::STDIN_FILENO) {
-        eprintln!("stdin is a terminal, aborting");
-        process::exit(1);
+        return Err(anyhow!("stdin is a terminal, aborting".to_string()));
     }
-    let stdin_input = read_to_end(io::stdin()).unwrap();
+
+    let stdin_input = read_to_end(io::stdin()).with_context(|| "failed reading stdin")?;
 
     let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
 
+    let Some(cmd) = env::args().skip(1).next() else {
+        return Err(anyhow!("expected first argument to be command".to_string()));
+    };
+
+    let cmd_args = env::args().skip(2).collect();
+
+    let (ui_waiting_process_component, ui_waiting_process_handle) =
+        UiWaitingProcess::new(cmd, cmd_args, stdin_input, redraw_tx.clone(), query_rx);
+
     terminal::TerminalRenderer::new(
         vec![
             terminal::Component::Prompt(Box::new(UiPrompt::new(query_tx))),
-            terminal::Component::Data(Box::new(UiWaitingProcess::new(
-                env::args().skip(1).next().unwrap(),
-                env::args().skip(2).collect(),
-                stdin_input,
-                redraw_tx.clone(),
-                query_rx,
-            ))),
+            terminal::Component::Data(Box::new(ui_waiting_process_component)),
         ],
         redraw_rx,
-    )
-    .listen();
+    )?
+    .start()?;
+
+    ui_waiting_process_handle.join().unwrap();
+    Ok(())
+}
+
+fn main() {
+    if let Err(err) = main_err() {
+        eprintln!("{}", err);
+        process::exit(1);
+    }
 }

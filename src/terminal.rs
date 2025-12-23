@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, anyhow};
 use std::{
     fs,
     io::{self, Read, Write},
@@ -27,24 +28,24 @@ pub struct TerminalReader {
 }
 
 impl TerminalReader {
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let tty = fs::File::open("/dev/tty")?;
         Ok(Self { tty })
     }
 
-    fn read_u8(&mut self) -> Result<u8, String> {
+    fn read_u8(&mut self) -> Result<u8> {
         let mut buf = [0];
-        match self.tty.read(&mut buf).map_err(|v| v.to_string())? {
-            0 => Err("unexpected eof".to_string()),
+        match self.tty.read(&mut buf)? {
+            0 => Err(anyhow!("unexpected eof")),
             _ => Ok(buf[0]),
         }
     }
 
     // ^[
-    fn read_escape(&mut self) -> Result<TerminalEscape, String> {
+    fn read_escape(&mut self) -> Result<TerminalEscape> {
         let next = self.read_u8()?;
         if next != b'[' {
-            return Err(format!("unexpected: {:x}", next));
+            return Err(anyhow!("unexpected: {:x}", next));
         };
 
         match self.read_u8()? {
@@ -54,9 +55,9 @@ impl TerminalReader {
         }
     }
 
-    pub fn read_input(&mut self) -> Result<Option<TerminalInput>, String> {
+    pub fn read_input(&mut self) -> Result<Option<TerminalInput>> {
         let mut buf = [0];
-        match self.tty.read(&mut buf).map_err(|v| v.to_string())? {
+        match self.tty.read(&mut buf)? {
             0 => Ok(None),
             _ => Ok(Some(match buf[0] {
                 0x1b => TerminalInput::Escape(self.read_escape()?),
@@ -78,7 +79,7 @@ pub struct TerminalWriter {
 }
 
 impl TerminalWriter {
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let tty = fs::File::create("/dev/tty")?;
         let fd = tty.as_raw_fd();
 
@@ -92,23 +93,26 @@ impl TerminalWriter {
         })
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.tty.flush()
+    fn flush(&mut self) -> Result<()> {
+        self.tty.flush()?;
+        Ok(())
     }
 
-    fn newline_start(&mut self) -> io::Result<()> {
-        self.write("\r\n".as_bytes())
+    fn newline_start(&mut self) -> Result<()> {
+        self.write("\r\n".as_bytes())?;
+        Ok(())
     }
 
-    fn write(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.tty.write_all(buf)
+    fn write(&mut self, buf: &[u8]) -> Result<()> {
+        self.tty.write_all(buf)?;
+        Ok(())
     }
 
-    fn clear(&mut self) -> io::Result<()> {
+    fn clear(&mut self) -> Result<()> {
         self.write("\x1b[2J\x1b[H".as_bytes())
     }
 
-    fn move_cursor(&mut self, line: usize, column: usize) -> io::Result<()> {
+    fn move_cursor(&mut self, line: usize, column: usize) -> Result<()> {
         self.write(format!("\x1b[{};{}H", line, column).as_bytes())
     }
 
@@ -122,7 +126,7 @@ impl Drop for TerminalWriter {
         unsafe {
             disable_raw_mode(self.fd, self.original_termios);
         }
-        switch_to_normal_terminal(&mut self.tty).unwrap();
+        let _ = switch_to_normal_terminal(&mut self.tty);
     }
 }
 
@@ -141,12 +145,14 @@ unsafe fn enable_raw_mode(tty_fd: i32) -> libc::termios {
     original_termios
 }
 
-fn switch_to_alternate_terminal<T: Write>(tty: &mut T) -> io::Result<()> {
-    tty.write_all("\x1b[?1049h\x1b[2J\x1b[H".as_bytes())
+fn switch_to_alternate_terminal<T: Write>(tty: &mut T) -> Result<()> {
+    tty.write_all("\x1b[?1049h\x1b[2J\x1b[H".as_bytes())?;
+    Ok(())
 }
 
-fn switch_to_normal_terminal<T: Write>(tty: &mut T) -> io::Result<()> {
-    tty.write_all("\x1b[2J\x1b[H\x1b[?1049l".as_bytes())
+fn switch_to_normal_terminal<T: Write>(tty: &mut T) -> Result<()> {
+    tty.write_all("\x1b[2J\x1b[H\x1b[?1049l".as_bytes())?;
+    Ok(())
 }
 
 unsafe fn disable_raw_mode(tty_fd: i32, termios: libc::termios) {
@@ -193,7 +199,7 @@ pub struct ComponentPromptOut {
 }
 
 pub trait ComponentPrompt {
-    fn input(&mut self, input: &TerminalInput);
+    fn input(&mut self, input: &TerminalInput) -> Result<()>;
     fn render(&self) -> ComponentPromptOut;
 }
 
@@ -218,44 +224,39 @@ pub struct TerminalRenderer {
     size: libc::winsize,
     terminal_writer: TerminalWriter,
 
-    size_update_handle: thread::JoinHandle<()>,
-    input_handle: thread::JoinHandle<()>,
-    redraw_event_handle: thread::JoinHandle<()>,
-
     event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
 }
 
+macro_rules! breakerr {
+    ($e:expr) => {{
+        match $e {
+            Ok(v) => v,
+            Err(_) => break,
+        }
+    }};
+}
+
 impl TerminalRenderer {
-    pub fn new(components: Vec<Component>, redraw_rx: sync::mpsc::Receiver<()>) -> Self {
+    pub fn new(components: Vec<Component>, redraw_rx: sync::mpsc::Receiver<()>) -> Result<Self> {
         let (event_tx, event_rx) = sync::mpsc::sync_channel(0);
 
-        let redraw_event_handle = thread::spawn({
-            let event_tx = event_tx.clone();
-            move || {
-                loop {
-                    redraw_rx.recv().unwrap();
-                    event_tx.send(TerminalRendererEvent::Redraw).unwrap();
-                }
-            }
-        });
-
-        let size_update_handle = thread::spawn({
+        // signals
+        thread::spawn({
             let event_tx = event_tx.clone();
             let mut signals = signal_hook::iterator::Signals::new(&[
                 signal_hook::consts::SIGWINCH,
                 signal_hook::consts::SIGINT,
                 signal_hook::consts::SIGTERM,
-            ])
-            .unwrap();
+            ])?;
 
             move || {
                 for signal in &mut signals {
                     match signal {
                         libc::SIGWINCH => {
-                            event_tx.send(TerminalRendererEvent::Resize).unwrap();
+                            breakerr!(event_tx.send(TerminalRendererEvent::Resize))
                         }
                         libc::SIGINT | libc::SIGTERM => {
-                            event_tx.send(TerminalRendererEvent::Quit).unwrap();
+                            breakerr!(event_tx.send(TerminalRendererEvent::Quit))
                         }
                         _ => unreachable!(),
                     }
@@ -263,31 +264,43 @@ impl TerminalRenderer {
             }
         });
 
-        let input_handle = thread::spawn({
+        // input
+        thread::spawn({
             let event_tx = event_tx.clone();
-            let mut terminal_reader = TerminalReader::new().unwrap();
+            let mut terminal_reader = TerminalReader::new()?;
             move || {
                 loop {
-                    let input = terminal_reader.read_input().unwrap();
-                    if let Some(input) = input {
-                        event_tx.send(TerminalRendererEvent::Input(input)).unwrap();
+                    let input = breakerr!(terminal_reader.read_input());
+                    match input {
+                        Some(input) => {
+                            breakerr!(event_tx.send(TerminalRendererEvent::Input(input)));
+                        }
+                        None => break,
                     }
                 }
             }
         });
 
-        let terminal_writer = TerminalWriter::new().unwrap();
+        // pipe redraw
+        thread::spawn({
+            let event_tx = event_tx.clone();
+            move || {
+                loop {
+                    breakerr!(redraw_rx.recv());
+                    breakerr!(event_tx.send(TerminalRendererEvent::Redraw));
+                }
+            }
+        });
+
+        let terminal_writer = TerminalWriter::new()?;
         let size = terminal_writer.size();
 
-        Self {
+        Ok(Self {
             size,
             terminal_writer,
             components,
-            size_update_handle,
-            input_handle,
-            redraw_event_handle,
             event_rx,
-        }
+        })
     }
 
     fn handle_size(&mut self) {
@@ -298,45 +311,51 @@ impl TerminalRenderer {
         &mut self,
         out: ComponentPromptOut,
         state: &mut TerminalRenderState,
-    ) {
+    ) -> Result<()> {
         state.left_lines -= 1;
 
         let mut cols = self.size.ws_col as usize;
         let chevron = "> ".as_bytes();
         cols -= chevron.len();
-        self.terminal_writer.write(chevron).unwrap();
+        self.terminal_writer.write(chevron)?;
 
         if out.query.len() <= cols {
-            self.terminal_writer.write(out.query.as_bytes()).unwrap();
+            self.terminal_writer.write(out.query.as_bytes())?;
         } else {
             let offset = out.query.len() - cols;
             self.terminal_writer
-                .write(out.query.as_str()[offset..].as_bytes())
-                .unwrap();
+                .write(out.query.as_str()[offset..].as_bytes())?;
         }
 
         state.cursor_line = 1;
         state.cursor_col = out.cursor_index + chevron.len() + 1;
+
+        Ok(())
     }
 
-    fn render_component_data(&mut self, out: ComponentDataOut, state: &mut TerminalRenderState) {
-        self.terminal_writer.newline_start().unwrap();
+    fn render_component_data(
+        &mut self,
+        out: ComponentDataOut,
+        state: &mut TerminalRenderState,
+    ) -> Result<()> {
+        self.terminal_writer.newline_start()?;
         state.left_lines -= 1;
         self.terminal_writer
-            .write("-".repeat(self.size.ws_col as usize).as_bytes())
-            .unwrap();
+            .write("-".repeat(self.size.ws_col as usize).as_bytes())?;
 
         let as_string = unsafe { String::from_utf8_unchecked(out.0) };
 
         for line in as_string.split("\n").take(state.left_lines as usize) {
-            self.terminal_writer.newline_start().unwrap();
-            self.terminal_writer.write(line.as_bytes()).unwrap();
+            self.terminal_writer.newline_start()?;
+            self.terminal_writer.write(line.as_bytes())?;
         }
         state.left_lines = 0;
+
+        Ok(())
     }
 
-    fn rerender(&mut self) {
-        self.terminal_writer.clear().unwrap();
+    fn rerender(&mut self) -> Result<()> {
+        self.terminal_writer.clear()?;
 
         let rendered = self
             .components
@@ -350,43 +369,48 @@ impl TerminalRenderer {
         let mut state = TerminalRenderState::new(&self.size);
         for x in rendered {
             match x {
-                ComponentRenderOut::Prompt(x) => self.render_component_prompt(x, &mut state),
-                ComponentRenderOut::Data(x) => self.render_component_data(x, &mut state),
+                ComponentRenderOut::Prompt(x) => self.render_component_prompt(x, &mut state)?,
+                ComponentRenderOut::Data(x) => self.render_component_data(x, &mut state)?,
             }
         }
 
         self.terminal_writer
-            .move_cursor(state.cursor_line, state.cursor_col)
-            .unwrap();
+            .move_cursor(state.cursor_line, state.cursor_col)?;
 
-        self.terminal_writer.flush().unwrap();
+        self.terminal_writer.flush()?;
+
+        Ok(())
     }
 
-    pub fn listen(mut self) {
-        // todo: wait for handles
-        // not only for local, but component as well
+    pub fn start(mut self) -> Result<()> {
         loop {
-            self.rerender();
-            match self.event_rx.recv().unwrap() {
+            self.rerender()?;
+            match self
+                .event_rx
+                .recv()
+                .with_context(|| "main listen loop receive error")?
+            {
                 TerminalRendererEvent::Resize => self.handle_size(),
                 TerminalRendererEvent::Input(terminal_input) => {
                     if let TerminalInput::Ctrl(ch) = &terminal_input {
                         if *ch == b'c' {
-                            todo!("quit");
+                            break;
                         }
                     }
                     for comp in &mut self.components {
                         match comp {
-                            Component::Prompt(x) => x.input(&terminal_input),
+                            Component::Prompt(x) => x.input(&terminal_input)?,
                             _ => {}
                         }
                     }
                 }
                 TerminalRendererEvent::Redraw => {}
                 TerminalRendererEvent::Quit => {
-                    todo!("quit");
+                    break;
                 }
             }
         }
+
+        Ok(())
     }
 }
