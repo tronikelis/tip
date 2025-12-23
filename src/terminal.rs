@@ -182,10 +182,10 @@ impl TerminalRenderState {
 
 enum ComponentRenderOut {
     Prompt(ComponentPromptOut),
-    Stream(ComponentStreamOut),
+    Data(ComponentDataOut),
 }
 
-pub struct ComponentStreamOut(pub Vec<u8>);
+pub struct ComponentDataOut(pub Vec<u8>);
 
 pub struct ComponentPromptOut {
     pub query: String,
@@ -197,13 +197,13 @@ pub trait ComponentPrompt {
     fn render(&self) -> ComponentPromptOut;
 }
 
-pub trait ComponentStream {
-    fn render(&self) -> ComponentStreamOut;
+pub trait ComponentData {
+    fn render(&self) -> ComponentDataOut;
 }
 
 pub enum Component {
     Prompt(Box<dyn ComponentPrompt>),
-    Stream(Box<dyn ComponentStream>),
+    Data(Box<dyn ComponentData>),
 }
 
 enum TerminalRendererEvent {
@@ -319,11 +319,7 @@ impl TerminalRenderer {
         state.cursor_col = out.cursor_index + chevron.len() + 1;
     }
 
-    fn render_component_stream(
-        &mut self,
-        out: ComponentStreamOut,
-        state: &mut TerminalRenderState,
-    ) {
+    fn render_component_data(&mut self, out: ComponentDataOut, state: &mut TerminalRenderState) {
         self.terminal_writer.newline_start().unwrap();
         state.left_lines -= 1;
         self.terminal_writer
@@ -347,7 +343,7 @@ impl TerminalRenderer {
             .iter()
             .map(|v| match v {
                 Component::Prompt(x) => ComponentRenderOut::Prompt(x.render()),
-                Component::Stream(x) => ComponentRenderOut::Stream(x.render()),
+                Component::Data(x) => ComponentRenderOut::Data(x.render()),
             })
             .collect::<Vec<_>>();
 
@@ -355,7 +351,7 @@ impl TerminalRenderer {
         for x in rendered {
             match x {
                 ComponentRenderOut::Prompt(x) => self.render_component_prompt(x, &mut state),
-                ComponentRenderOut::Stream(x) => self.render_component_stream(x, &mut state),
+                ComponentRenderOut::Data(x) => self.render_component_data(x, &mut state),
             }
         }
 

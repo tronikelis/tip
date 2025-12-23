@@ -143,10 +143,10 @@ impl UiWaitingProcess {
     }
 }
 
-impl terminal::ComponentStream for UiWaitingProcess {
-    fn render(&self) -> terminal::ComponentStreamOut {
+impl terminal::ComponentData for UiWaitingProcess {
+    fn render(&self) -> terminal::ComponentDataOut {
         let stdout = self.stdout.lock().unwrap().clone();
-        terminal::ComponentStreamOut(stdout)
+        terminal::ComponentDataOut(stdout)
     }
 }
 
@@ -169,7 +169,7 @@ fn main() {
     terminal::TerminalRenderer::new(
         vec![
             terminal::Component::Prompt(Box::new(UiPrompt::new(query_tx))),
-            terminal::Component::Stream(Box::new(UiWaitingProcess::new(
+            terminal::Component::Data(Box::new(UiWaitingProcess::new(
                 env::args().skip(1).next().unwrap(),
                 env::args().skip(2).collect(),
                 stdin_input,
