@@ -101,20 +101,14 @@ impl UiWaitingProcess {
                 loop {
                     let Ok(query) = query_rx.recv() else {
                         if let Some(child_handle) = child_handle {
-                            unsafe {
-                                libc::kill(child_handle.0 as i32, 9);
-                            }
-                            child_handle.1.join().unwrap();
+                            Self::kill_child(child_handle.0 as i32, child_handle.1);
                         }
 
                         break;
                     };
 
                     if let Some(child_handle) = child_handle {
-                        unsafe {
-                            libc::kill(child_handle.0 as i32, 9);
-                        }
-                        child_handle.1.join().unwrap();
+                        Self::kill_child(child_handle.0 as i32, child_handle.1);
                     }
 
                     let mut child = match process::Command::new(cmd.clone())
@@ -160,6 +154,13 @@ impl UiWaitingProcess {
         });
 
         (Self { stdout }, handle)
+    }
+
+    fn kill_child(id: i32, handle: thread::JoinHandle<()>) {
+        unsafe {
+            libc::kill(id as i32, 9);
+        }
+        handle.join().unwrap();
     }
 }
 
