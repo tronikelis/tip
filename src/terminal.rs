@@ -179,7 +179,7 @@ struct TerminalRenderState {
 impl TerminalRenderState {
     fn new(size: &libc::winsize) -> Self {
         Self {
-            left_lines: size.ws_col as usize,
+            left_lines: size.ws_row as usize,
             cursor_line: 1,
             cursor_col: 1,
         }
@@ -347,7 +347,8 @@ impl TerminalRenderer {
 
         for line in as_string.split("\n").take(state.left_lines as usize) {
             self.terminal_writer.newline_start()?;
-            self.terminal_writer.write(line.as_bytes())?;
+            let max_len = line.len().min(self.size.ws_col as usize);
+            self.terminal_writer.write(line[0..max_len].as_bytes())?;
         }
         state.left_lines = 0;
 
