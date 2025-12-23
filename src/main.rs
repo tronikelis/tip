@@ -82,9 +82,7 @@ impl UiWaitingProcess {
         cmd: String,
         args: Vec<String>,
         input: Vec<u8>,
-        // todo: this type leaks from the implementation,
-        // I only need to send redraw event here
-        event_tx: sync::mpsc::SyncSender<terminal::TerminalRendererEvent>,
+        redraw_tx: sync::mpsc::SyncSender<()>,
         query_rx: sync::mpsc::Receiver<String>,
     ) -> Self {
         let stdout = sync::Arc::new(sync::Mutex::new(Vec::new()));
@@ -114,7 +112,7 @@ impl UiWaitingProcess {
                         child.id(),
                         thread::spawn({
                             let input = input.clone();
-                            let ui_event_tx = event_tx.clone();
+                            let redraw_tx = redraw_tx.clone();
                             let stdout = stdout.clone();
                             move || {
                                 let mut child_stdin = child.stdin.take().unwrap();
@@ -127,9 +125,7 @@ impl UiWaitingProcess {
                                 child.wait().unwrap();
                                 if let Ok(child_stdout) = child_stdout {
                                     *stdout.lock().unwrap() = child_stdout;
-                                    ui_event_tx
-                                        .send(terminal::TerminalRendererEvent::Redraw)
-                                        .unwrap();
+                                    redraw_tx.send(()).unwrap();
                                 }
                             }
                         }),
@@ -168,7 +164,7 @@ fn main() {
     let stdin_input = read_to_end(io::stdin()).unwrap();
 
     let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
-    let (ui_event_tx, ui_event_rx) = sync::mpsc::sync_channel(0);
+    let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
 
     terminal::TerminalRenderer::new(
         vec![
@@ -177,12 +173,11 @@ fn main() {
                 env::args().skip(1).next().unwrap(),
                 env::args().skip(2).collect(),
                 stdin_input,
-                ui_event_tx.clone(),
+                redraw_tx.clone(),
                 query_rx,
             ))),
         ],
-        ui_event_tx,
-        ui_event_rx,
+        redraw_rx,
     )
     .listen();
 }

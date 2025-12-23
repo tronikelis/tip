@@ -206,7 +206,7 @@ pub enum Component {
     Stream(Box<dyn ComponentStream>),
 }
 
-pub enum TerminalRendererEvent {
+enum TerminalRendererEvent {
     Resize,
     Input(TerminalInput),
     Redraw,
@@ -220,16 +220,25 @@ pub struct TerminalRenderer {
 
     size_update_handle: thread::JoinHandle<()>,
     input_handle: thread::JoinHandle<()>,
+    redraw_event_handle: thread::JoinHandle<()>,
 
     event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
 }
 
 impl TerminalRenderer {
-    pub fn new(
-        components: Vec<Component>,
-        event_tx: sync::mpsc::SyncSender<TerminalRendererEvent>,
-        event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
-    ) -> Self {
+    pub fn new(components: Vec<Component>, redraw_rx: sync::mpsc::Receiver<()>) -> Self {
+        let (event_tx, event_rx) = sync::mpsc::sync_channel(0);
+
+        let redraw_event_handle = thread::spawn({
+            let event_tx = event_tx.clone();
+            move || {
+                loop {
+                    redraw_rx.recv().unwrap();
+                    event_tx.send(TerminalRendererEvent::Redraw).unwrap();
+                }
+            }
+        });
+
         let size_update_handle = thread::spawn({
             let event_tx = event_tx.clone();
             let mut signals = signal_hook::iterator::Signals::new(&[
@@ -276,6 +285,7 @@ impl TerminalRenderer {
             components,
             size_update_handle,
             input_handle,
+            redraw_event_handle,
             event_rx,
         }
     }
