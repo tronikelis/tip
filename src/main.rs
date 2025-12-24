@@ -129,7 +129,7 @@ impl UiWaitingProcess {
                         unreachable!();
                     };
 
-                    let stdin = child.0.stdin.take().unwrap();
+                    let mut stdin = child.0.stdin.take().unwrap();
                     let stdout = child.0.stdout.take().unwrap();
 
                     onerr!(Self::reset_data(data.clone(), redraw_tx.clone()), {
@@ -141,7 +141,9 @@ impl UiWaitingProcess {
                         let data = data.clone();
                         let redraw_tx = redraw_tx.clone();
                         move || {
-                            let write_handle = Self::spawn_write_child_stdin(input, stdin);
+                            let write_handle = thread::spawn(move || {
+                                let _ = stdin.write_all(&input);
+                            });
                             onerr!(Self::read_child_stdout(stdout, data, redraw_tx), { return });
                             write_handle.join().unwrap();
                         }
@@ -166,15 +168,6 @@ impl UiWaitingProcess {
         }
 
         Ok(())
-    }
-
-    fn spawn_write_child_stdin(
-        input: sync::Arc<Vec<u8>>,
-        mut stdin: process::ChildStdin,
-    ) -> thread::JoinHandle<()> {
-        thread::spawn(move || {
-            let _ = stdin.write_all(&input);
-        })
     }
 
     fn spawn_child(cmd: &str, args: &[String], query: &str) -> Result<child::DroppableChild> {
@@ -236,28 +229,63 @@ fn main_err() -> Result<()> {
     let Some(cmd) = env::args().skip(1).next() else {
         return Err(anyhow!("expected first argument to be command".to_string()));
     };
+    let cmd_args = env::args().skip(2).collect::<Vec<_>>();
 
-    let cmd_args = env::args().skip(2).collect();
+    let (mut ui_waiting_process, ui_waiting_process_handle) = UiWaitingProcess::new(
+        cmd.clone(),
+        cmd_args.clone(),
+        stdin_input.clone(),
+        redraw_tx.clone(),
+        query_rx,
+    );
 
-    let (ui_waiting_process, ui_waiting_process_handle) =
-        UiWaitingProcess::new(cmd, cmd_args, stdin_input, redraw_tx.clone(), query_rx);
+    {
+        let mut ui_prompt = UiPrompt::new(query_tx);
 
-    terminal::TerminalRenderer::new(
-        vec![
-            terminal::Component::Prompt(Box::new(UiPrompt::new(query_tx))),
-            terminal::Component::Data(Box::new(ui_waiting_process)),
-        ],
-        redraw_rx,
-    )?
-    .start(|input| match input {
-        terminal::TerminalInput::Ctrl(ch) => match *ch {
-            b'c' | b'm' => true,
+        terminal::TerminalRenderer::new(
+            vec![
+                terminal::Component::Prompt(&mut ui_prompt),
+                terminal::Component::Data(&mut ui_waiting_process),
+            ],
+            redraw_rx,
+        )?
+        .start(|input| match input {
+            terminal::TerminalInput::Ctrl(ch) => match *ch {
+                b'm' => true,
+                b'c' => true,
+                _ => false,
+            },
             _ => false,
-        },
-        _ => false,
-    })?;
+        })?;
 
+        pipe_cmd_stdout(cmd, cmd_args, stdin_input, ui_prompt.get_string())?;
+    }
+
+    // to join this, ui prompt needs to be dropped
     ui_waiting_process_handle.join().unwrap();
+    Ok(())
+}
+
+fn pipe_cmd_stdout(cmd: String, args: Vec<String>, input: Vec<u8>, query: String) -> Result<()> {
+    let mut child = process::Command::new(cmd)
+        .args(args)
+        .arg(query)
+        .stdin(process::Stdio::piped())
+        .stdout(process::Stdio::piped())
+        .stderr(process::Stdio::piped())
+        .spawn()?;
+
+    let stdin_handle = thread::spawn({
+        let mut stdin = child.stdin.take().unwrap();
+        move || {
+            let _ = stdin.write_all(&input);
+        }
+    });
+
+    io::copy(&mut child.stdout.take().unwrap(), &mut io::stdout())?;
+    child.wait()?;
+    stdin_handle.join().unwrap();
+
     Ok(())
 }
 

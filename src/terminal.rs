@@ -223,9 +223,9 @@ pub trait ComponentData {
     fn render(&self) -> ComponentDataOut;
 }
 
-pub enum Component {
-    Prompt(Box<dyn ComponentPrompt>),
-    Data(Box<dyn ComponentData>),
+pub enum Component<'a> {
+    Prompt(&'a mut dyn ComponentPrompt),
+    Data(&'a mut dyn ComponentData),
 }
 
 enum TerminalRendererEvent {
@@ -235,16 +235,19 @@ enum TerminalRendererEvent {
     Quit,
 }
 
-pub struct TerminalRenderer {
-    components: Vec<Component>,
+pub struct TerminalRenderer<'a> {
+    components: Vec<Component<'a>>,
     size: libc::winsize,
     terminal_writer: TerminalWriter,
 
     event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
 }
 
-impl TerminalRenderer {
-    pub fn new(components: Vec<Component>, redraw_rx: sync::mpsc::Receiver<()>) -> Result<Self> {
+impl<'a> TerminalRenderer<'a> {
+    pub fn new(
+        components: Vec<Component<'a>>,
+        redraw_rx: sync::mpsc::Receiver<()>,
+    ) -> Result<Self> {
         let (event_tx, event_rx) = sync::mpsc::sync_channel(0);
 
         // signals
