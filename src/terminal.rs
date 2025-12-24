@@ -7,6 +7,15 @@ use std::{
     sync, thread,
 };
 
+macro_rules! onerr {
+    ($e:expr, $s:block) => {{
+        match $e {
+            Ok(v) => v,
+            Err(_) => $s,
+        }
+    }};
+}
+
 #[derive(Debug)]
 pub enum TerminalEscape {
     LeftArrow,
@@ -227,15 +236,6 @@ pub struct TerminalRenderer {
     event_rx: sync::mpsc::Receiver<TerminalRendererEvent>,
 }
 
-macro_rules! breakerr {
-    ($e:expr) => {{
-        match $e {
-            Ok(v) => v,
-            Err(_) => break,
-        }
-    }};
-}
-
 impl TerminalRenderer {
     pub fn new(components: Vec<Component>, redraw_rx: sync::mpsc::Receiver<()>) -> Result<Self> {
         let (event_tx, event_rx) = sync::mpsc::sync_channel(0);
@@ -253,10 +253,10 @@ impl TerminalRenderer {
                 for signal in &mut signals {
                     match signal {
                         libc::SIGWINCH => {
-                            breakerr!(event_tx.send(TerminalRendererEvent::Resize))
+                            onerr!(event_tx.send(TerminalRendererEvent::Resize), { break })
                         }
                         libc::SIGINT | libc::SIGTERM => {
-                            breakerr!(event_tx.send(TerminalRendererEvent::Quit))
+                            onerr!(event_tx.send(TerminalRendererEvent::Quit), { break })
                         }
                         _ => unreachable!(),
                     }
@@ -270,10 +270,12 @@ impl TerminalRenderer {
             let mut terminal_reader = TerminalReader::new()?;
             move || {
                 loop {
-                    let input = breakerr!(terminal_reader.read_input());
+                    let input = onerr!(terminal_reader.read_input(), { break });
                     match input {
                         Some(input) => {
-                            breakerr!(event_tx.send(TerminalRendererEvent::Input(input)));
+                            onerr!(event_tx.send(TerminalRendererEvent::Input(input)), {
+                                break;
+                            });
                         }
                         None => break,
                     }
@@ -286,8 +288,8 @@ impl TerminalRenderer {
             let event_tx = event_tx.clone();
             move || {
                 loop {
-                    breakerr!(redraw_rx.recv());
-                    breakerr!(event_tx.send(TerminalRendererEvent::Redraw));
+                    onerr!(redraw_rx.recv(), { break });
+                    onerr!(event_tx.send(TerminalRendererEvent::Redraw), { break });
                 }
             }
         });

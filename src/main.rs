@@ -5,7 +5,17 @@ use std::{
     process, sync, thread,
 };
 
+mod child;
 mod terminal;
+
+macro_rules! onerr {
+    ($e:expr, $s:block) => {{
+        match $e {
+            Ok(v) => v,
+            Err(_) => $s,
+        }
+    }};
+}
 
 #[derive(Debug)]
 struct UiPrompt {
@@ -82,7 +92,7 @@ impl terminal::ComponentPrompt for UiPrompt {
 }
 
 struct UiWaitingProcess {
-    stdout: sync::Arc<sync::Mutex<Vec<u8>>>,
+    data: sync::Arc<sync::Mutex<Vec<u8>>>,
 }
 
 impl UiWaitingProcess {
@@ -93,88 +103,121 @@ impl UiWaitingProcess {
         redraw_tx: sync::mpsc::SyncSender<()>,
         query_rx: sync::mpsc::Receiver<String>,
     ) -> (Self, thread::JoinHandle<()>) {
-        let stdout = sync::Arc::new(sync::Mutex::new(Vec::new()));
-        let handle = thread::spawn({
-            let stdout = stdout.clone();
-            move || {
-                let mut child_handle: Option<(u32, thread::JoinHandle<()>)> = None;
-                loop {
-                    let Ok(query) = query_rx.recv() else {
-                        if let Some(child_handle) = child_handle {
-                            Self::kill_child(child_handle.0 as i32, child_handle.1);
-                        }
-
-                        break;
-                    };
-
-                    if let Some(child_handle) = child_handle {
-                        Self::kill_child(child_handle.0 as i32, child_handle.1);
-                    }
-
-                    let mut child = match process::Command::new(cmd.clone())
-                        .args(args.clone().iter())
-                        .arg(query)
-                        .stdin(process::Stdio::piped())
-                        .stdout(process::Stdio::piped())
-                        .stderr(process::Stdio::piped())
-                        .spawn()
-                    {
-                        Ok(v) => v,
-                        Err(err) => {
-                            *stdout.lock().unwrap() = err.to_string().as_bytes().to_vec();
-                            let _ = redraw_tx.send(());
-                            break;
-                        }
-                    };
-
-                    child_handle = Some((
-                        child.id(),
-                        thread::spawn({
-                            let input = input.clone();
-                            let redraw_tx = redraw_tx.clone();
-                            let stdout = stdout.clone();
-                            move || {
-                                let mut child_stdin = child.stdin.take().unwrap();
-                                let write_stdin =
-                                    thread::spawn(move || child_stdin.write_all(&input));
-
-                                let child_stdout = read_to_end(child.stdout.take().unwrap());
-                                let _ = write_stdin.join().unwrap(); // ignore write error
-
-                                let Ok(_) = child.wait() else { return };
-                                if let Ok(child_stdout) = child_stdout {
-                                    *stdout.lock().unwrap() = child_stdout;
-                                    let _ = redraw_tx.send(());
-                                }
-                            }
-                        }),
-                    ));
-                }
-            }
-        });
-
-        (Self { stdout }, handle)
+        let data = sync::Arc::new(sync::Mutex::new(Vec::new()));
+        let handle = Self::start(cmd, args, input, redraw_tx, query_rx, data.clone());
+        (Self { data }, handle)
     }
 
-    fn kill_child(id: i32, handle: thread::JoinHandle<()>) {
-        unsafe {
-            libc::kill(id as i32, 9);
+    fn start(
+        cmd: String,
+        args: Vec<String>,
+        input: Vec<u8>,
+        redraw_tx: sync::mpsc::SyncSender<()>,
+        query_rx: sync::mpsc::Receiver<String>,
+        data: sync::Arc<sync::Mutex<Vec<u8>>>,
+    ) -> thread::JoinHandle<()> {
+        let input = sync::Arc::new(input);
+        thread::spawn({
+            move || {
+                let mut _child: Option<_> = None;
+                loop {
+                    let query = onerr!(query_rx.recv(), { return });
+                    _child = Some(onerr!(Self::spawn_child(&cmd, &args, &query), {
+                        continue;
+                    }));
+                    let Some(child) = &mut _child else {
+                        unreachable!();
+                    };
+
+                    let stdin = child.0.stdin.take().unwrap();
+                    let stdout = child.0.stdout.take().unwrap();
+
+                    onerr!(Self::reset_data(data.clone(), redraw_tx.clone()), {
+                        continue;
+                    });
+
+                    thread::spawn({
+                        let input = input.clone();
+                        let data = data.clone();
+                        let redraw_tx = redraw_tx.clone();
+                        move || {
+                            let write_handle = Self::spawn_write_child_stdin(input, stdin);
+                            onerr!(Self::read_child_stdout(stdout, data, redraw_tx), { return });
+                            write_handle.join().unwrap();
+                        }
+                    });
+                }
+            }
+        })
+    }
+
+    fn read_child_stdout(
+        mut stdout: process::ChildStdout,
+        data: sync::Arc<sync::Mutex<Vec<u8>>>,
+        redraw_tx: sync::mpsc::SyncSender<()>,
+    ) -> Result<()> {
+        loop {
+            let mut buf = [0; 1 << 10];
+            let size = stdout.read(&mut buf)?;
+            if size == 0 {
+                break;
+            }
+            Self::update_data(data.clone(), &buf[..size], redraw_tx.clone())?
         }
-        handle.join().unwrap();
+
+        Ok(())
+    }
+
+    fn spawn_write_child_stdin(
+        input: sync::Arc<Vec<u8>>,
+        mut stdin: process::ChildStdin,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    }
+
+    fn spawn_child(cmd: &str, args: &[String], query: &str) -> Result<child::DroppableChild> {
+        Ok(child::DroppableChild::new(
+            process::Command::new(cmd)
+                .args(args)
+                .arg(query)
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped())
+                .spawn()?,
+        ))
+    }
+
+    fn reset_data(
+        data: sync::Arc<sync::Mutex<Vec<u8>>>,
+        redraw_tx: sync::mpsc::SyncSender<()>,
+    ) -> Result<()> {
+        *data.lock().unwrap() = Vec::new();
+        redraw_tx.send(())?;
+        Ok(())
+    }
+
+    fn update_data(
+        data: sync::Arc<sync::Mutex<Vec<u8>>>,
+        buf: &[u8],
+        redraw_tx: sync::mpsc::SyncSender<()>,
+    ) -> Result<()> {
+        {
+            let mut data = data.lock().unwrap();
+            buf.iter().for_each(|v| data.push(*v));
+            // mutex gets dropped here
+        }
+        redraw_tx.send(())?;
+        Ok(())
     }
 }
 
 impl terminal::ComponentData for UiWaitingProcess {
     fn render(&self) -> terminal::ComponentDataOut {
-        let stdout = self.stdout.lock().unwrap().clone();
-        terminal::ComponentDataOut(stdout)
+        let data = self.data.lock().unwrap().clone();
+        terminal::ComponentDataOut(data)
     }
-}
-
-fn read_to_end<T: Read>(reader: T) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    io::BufReader::new(reader).read_to_end(&mut buf)?;
-    Ok(buf)
 }
 
 fn main_err() -> Result<()> {
@@ -182,7 +225,10 @@ fn main_err() -> Result<()> {
         return Err(anyhow!("stdin is a terminal, aborting".to_string()));
     }
 
-    let stdin_input = read_to_end(io::stdin()).with_context(|| "failed reading stdin")?;
+    let mut stdin_input = Vec::new();
+    io::stdin()
+        .read_to_end(&mut stdin_input)
+        .with_context(|| "failed reading stdin")?;
 
     let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
@@ -193,13 +239,13 @@ fn main_err() -> Result<()> {
 
     let cmd_args = env::args().skip(2).collect();
 
-    let (ui_waiting_process_component, ui_waiting_process_handle) =
+    let (ui_waiting_process, ui_waiting_process_handle) =
         UiWaitingProcess::new(cmd, cmd_args, stdin_input, redraw_tx.clone(), query_rx);
 
     terminal::TerminalRenderer::new(
         vec![
             terminal::Component::Prompt(Box::new(UiPrompt::new(query_tx))),
-            terminal::Component::Data(Box::new(ui_waiting_process_component)),
+            terminal::Component::Data(Box::new(ui_waiting_process)),
         ],
         redraw_rx,
     )?
