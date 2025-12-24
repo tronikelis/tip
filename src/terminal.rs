@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use std::{
-    fs,
+    env, fs,
     io::{self, Read, Write},
     mem,
     os::fd::AsRawFd,
@@ -85,20 +85,25 @@ pub struct TerminalWriter {
     tty: io::BufWriter<fs::File>,
     fd: i32,
     original_termios: libc::termios,
+    debug: bool,
 }
 
 impl TerminalWriter {
     pub fn new() -> Result<Self> {
         let tty = fs::File::create("/dev/tty")?;
         let fd = tty.as_raw_fd();
-
         let mut tty = io::BufWriter::new(tty);
-        switch_to_alternate_terminal(&mut tty)?;
+
+        let debug = env::var("TIP_DEBUG").unwrap_or("".to_string()) == "true";
+        if !debug {
+            switch_to_alternate_terminal(&mut tty)?
+        };
 
         Ok(Self {
             tty,
             fd,
             original_termios: unsafe { enable_raw_mode(fd) },
+            debug,
         })
     }
 
@@ -135,7 +140,9 @@ impl Drop for TerminalWriter {
         unsafe {
             disable_raw_mode(self.fd, self.original_termios);
         }
-        let _ = switch_to_normal_terminal(&mut self.tty);
+        if !self.debug {
+            let _ = switch_to_normal_terminal(&mut self.tty);
+        }
     }
 }
 
@@ -385,7 +392,7 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    pub fn start(mut self) -> Result<()> {
+    pub fn start(mut self, stop: impl Fn(&TerminalInput) -> bool) -> Result<()> {
         loop {
             self.rerender()?;
             match self
@@ -395,10 +402,8 @@ impl TerminalRenderer {
             {
                 TerminalRendererEvent::Resize => self.handle_size(),
                 TerminalRendererEvent::Input(terminal_input) => {
-                    if let TerminalInput::Ctrl(ch) = &terminal_input {
-                        if *ch == b'c' {
-                            break;
-                        }
+                    if stop(&terminal_input) {
+                        break;
                     }
                     for comp in &mut self.components {
                         match comp {

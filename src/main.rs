@@ -249,7 +249,13 @@ fn main_err() -> Result<()> {
         ],
         redraw_rx,
     )?
-    .start()?;
+    .start(|input| match input {
+        terminal::TerminalInput::Ctrl(ch) => match *ch {
+            b'c' | b'm' => true,
+            _ => false,
+        },
+        _ => false,
+    })?;
 
     ui_waiting_process_handle.join().unwrap();
     Ok(())
