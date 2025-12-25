@@ -177,7 +177,7 @@ impl UiWaitingProcess {
                 has_read = true;
                 Self::reset_data(data.clone(), redraw_tx.clone())?;
             }
-            Self::update_data(data.clone(), &buf[..size], redraw_tx.clone())?
+            Self::push_to_data(data.clone(), &buf[..size], redraw_tx.clone())?
         }
 
         Ok(())
@@ -207,7 +207,7 @@ impl UiWaitingProcess {
         Ok(())
     }
 
-    fn update_data(
+    fn push_to_data(
         data: sync::Arc<sync::Mutex<Vec<u8>>>,
         buf: &[u8],
         redraw_tx: sync::mpsc::SyncSender<()>,
