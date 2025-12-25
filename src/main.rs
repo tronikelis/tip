@@ -144,8 +144,8 @@ impl UiWaitingProcess {
                             });
 
                             let _ =
-                                Self::read_child_stream(stdout, data.clone(), redraw_tx.clone());
-                            let _ = Self::read_child_stream(stderr, data, redraw_tx);
+                                Self::read_child_stream(stderr, data.clone(), redraw_tx.clone());
+                            let _ = Self::read_child_stream(stdout, data, redraw_tx);
 
                             write_handle.join().unwrap();
                         }
