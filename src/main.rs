@@ -134,6 +134,10 @@ impl UiWaitingProcess {
                     let stdout = child.0.stdout.take().unwrap();
                     let stderr = child.0.stderr.take().unwrap();
 
+                    onerr!(Self::reset_data(data.clone(), redraw_tx.clone()), {
+                        return;
+                    });
+
                     thread::spawn({
                         let input = input.clone();
                         let data = data.clone();
