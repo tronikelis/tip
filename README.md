@@ -8,5 +8,5 @@ A simple cli utility to interactively run other tools, e.g `jq`
 
 Here im launching `jq` with some arbitrary input
 
-[![asciicast](https://asciinema.org/a/PtKriefzOTlV6LvxyvFNNi4o4.svg)](https://asciinema.org/a/PtKriefzOTlV6LvxyvFNNi4o4)
+[![asciicast](https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW.svg)](https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW)
 
