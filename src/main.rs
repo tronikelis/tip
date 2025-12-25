@@ -83,6 +83,7 @@ impl terminal::ComponentPrompt for UiPrompt {
             terminal::TerminalInput::Escape(escape) => match escape {
                 terminal::TerminalEscape::LeftArrow => self.move_cursor(-1),
                 terminal::TerminalEscape::RightArrow => self.move_cursor(1),
+                _ => {}
             },
             _ => {}
         }
@@ -261,7 +262,7 @@ fn main_err() -> Result<()> {
         redraw_rx,
     )?
     .start(|input| match input {
-        terminal::TerminalInput::Ctrl(ch) => match *ch {
+        terminal::TerminalInput::Ctrl(ch) => match ch {
             // enter
             b'm' => {
                 print_to_stdout = true;
@@ -269,6 +270,10 @@ fn main_err() -> Result<()> {
             }
             // c-c
             b'c' => true,
+            _ => false,
+        },
+        terminal::TerminalInput::Escape(esc) => match esc {
+            terminal::TerminalEscape::Timeout => true,
             _ => false,
         },
         _ => false,

@@ -20,6 +20,7 @@ macro_rules! onerr {
 pub enum TerminalEscape {
     LeftArrow,
     RightArrow,
+    Timeout,
 }
 
 #[derive(Debug)]
@@ -27,7 +28,6 @@ pub enum TerminalInput {
     Printable(u8),
     Ctrl(u8),
     Escape(TerminalEscape),
-    Esc,
     Delete,
 }
 
@@ -50,9 +50,26 @@ impl TerminalReader {
         }
     }
 
+    fn read_u8_timeout(&mut self, timeout_ms: i32) -> Result<Option<u8>> {
+        let mut pollfd = libc::pollfd {
+            fd: self.tty.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        let polled = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        match polled {
+            0 => Ok(None),
+            -1 => Err(anyhow!("error in poll")),
+            _ => self.read_u8().map(|v| Some(v)),
+        }
+    }
+
     // ^[
     fn read_escape(&mut self) -> Result<TerminalEscape> {
-        let next = self.read_u8()?;
+        let Some(next) = self.read_u8_timeout(50)? else {
+            return Ok(TerminalEscape::Timeout);
+        };
         if next != b'[' {
             return Err(anyhow!("unexpected: {:x}", next));
         };
