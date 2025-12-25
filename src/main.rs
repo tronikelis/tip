@@ -120,8 +120,8 @@ impl UiWaitingProcess {
         thread::spawn({
             move || {
                 let mut _child: Option<_> = None;
+                let mut query = String::new();
                 loop {
-                    let query = onerr!(query_rx.recv(), { return });
                     _child = Some(onerr!(Self::spawn_child(&cmd, &args, &query), {
                         continue;
                     }));
@@ -131,10 +131,7 @@ impl UiWaitingProcess {
 
                     let mut stdin = child.0.stdin.take().unwrap();
                     let stdout = child.0.stdout.take().unwrap();
-
-                    onerr!(Self::reset_data(data.clone(), redraw_tx.clone()), {
-                        continue;
-                    });
+                    let stderr = child.0.stderr.take().unwrap();
 
                     thread::spawn({
                         let input = input.clone();
@@ -144,25 +141,36 @@ impl UiWaitingProcess {
                             let write_handle = thread::spawn(move || {
                                 let _ = stdin.write_all(&input);
                             });
-                            onerr!(Self::read_child_stdout(stdout, data, redraw_tx), { return });
+
+                            let _ =
+                                Self::read_child_stream(stdout, data.clone(), redraw_tx.clone());
+                            let _ = Self::read_child_stream(stderr, data, redraw_tx);
+
                             write_handle.join().unwrap();
                         }
                     });
+
+                    query = onerr!(query_rx.recv(), { return });
                 }
             }
         })
     }
 
-    fn read_child_stdout(
-        mut stdout: process::ChildStdout,
+    fn read_child_stream(
+        mut stream: impl Read,
         data: sync::Arc<sync::Mutex<Vec<u8>>>,
         redraw_tx: sync::mpsc::SyncSender<()>,
     ) -> Result<()> {
+        let mut has_read = false;
         loop {
             let mut buf = [0; 1 << 10];
-            let size = stdout.read(&mut buf)?;
+            let size = stream.read(&mut buf)?;
             if size == 0 {
                 break;
+            }
+            if !has_read {
+                has_read = true;
+                Self::reset_data(data.clone(), redraw_tx.clone())?;
             }
             Self::update_data(data.clone(), &buf[..size], redraw_tx.clone())?
         }
@@ -171,15 +179,18 @@ impl UiWaitingProcess {
     }
 
     fn spawn_child(cmd: &str, args: &[String], query: &str) -> Result<child::DroppableChild> {
-        Ok(child::DroppableChild::new(
-            process::Command::new(cmd)
-                .args(args)
-                .arg(query)
-                .stdin(process::Stdio::piped())
-                .stdout(process::Stdio::piped())
-                .stderr(process::Stdio::piped())
-                .spawn()?,
-        ))
+        let mut command = process::Command::new(cmd);
+        command
+            .args(args)
+            .stdin(process::Stdio::piped())
+            .stdout(process::Stdio::piped())
+            .stderr(process::Stdio::piped());
+
+        if !query.is_empty() {
+            command.arg(query);
+        }
+
+        Ok(child::DroppableChild::new(command.spawn()?))
     }
 
     fn reset_data(
@@ -214,19 +225,20 @@ impl terminal::ComponentData for UiWaitingProcess {
 }
 
 fn main_err() -> Result<()> {
-    if terminal::isatty(libc::STDIN_FILENO) {
-        return Err(anyhow!("stdin is a terminal, aborting".to_string()));
-    }
+    let stdin_input = {
+        let mut v = Vec::new();
+        if !terminal::isatty(libc::STDIN_FILENO) {
+            io::stdin()
+                .read_to_end(&mut v)
+                .with_context(|| "failed reading stdin")?;
+        }
+        v
+    };
 
     let Some(cmd) = env::args().skip(1).next() else {
         return Err(anyhow!("expected first argument to be command".to_string()));
     };
     let cmd_args = env::args().skip(2).collect::<Vec<_>>();
-
-    let mut stdin_input = Vec::new();
-    io::stdin()
-        .read_to_end(&mut stdin_input)
-        .with_context(|| "failed reading stdin")?;
 
     let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
