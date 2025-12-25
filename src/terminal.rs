@@ -280,7 +280,7 @@ impl<'a> TerminalRenderer<'a> {
             let mut terminal_reader = TerminalReader::new()?;
             move || {
                 loop {
-                    let input = onerr!(terminal_reader.read_input(), { break });
+                    let input = terminal_reader.read_input().unwrap();
                     match input {
                         Some(input) => {
                             onerr!(event_tx.send(TerminalRendererEvent::Input(input)), {
