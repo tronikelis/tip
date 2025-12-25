@@ -102,10 +102,10 @@ impl UiWaitingProcess {
         input: Vec<u8>,
         redraw_tx: sync::mpsc::SyncSender<()>,
         query_rx: sync::mpsc::Receiver<String>,
-    ) -> (Self, thread::JoinHandle<()>) {
+    ) -> Self {
         let data = sync::Arc::new(sync::Mutex::new(Vec::new()));
-        let handle = Self::start(cmd, args, input, redraw_tx, query_rx, data.clone());
-        (Self { data }, handle)
+        Self::start(cmd, args, input, redraw_tx, query_rx, data.clone());
+        Self { data }
     }
 
     fn start(
@@ -218,6 +218,11 @@ fn main_err() -> Result<()> {
         return Err(anyhow!("stdin is a terminal, aborting".to_string()));
     }
 
+    let Some(cmd) = env::args().skip(1).next() else {
+        return Err(anyhow!("expected first argument to be command".to_string()));
+    };
+    let cmd_args = env::args().skip(2).collect::<Vec<_>>();
+
     let mut stdin_input = Vec::new();
     io::stdin()
         .read_to_end(&mut stdin_input)
@@ -226,51 +231,41 @@ fn main_err() -> Result<()> {
     let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
 
-    let Some(cmd) = env::args().skip(1).next() else {
-        return Err(anyhow!("expected first argument to be command".to_string()));
-    };
-    let cmd_args = env::args().skip(2).collect::<Vec<_>>();
-
-    let (mut ui_waiting_process, ui_waiting_process_handle) = UiWaitingProcess::new(
+    let mut ui_waiting_process = UiWaitingProcess::new(
         cmd.clone(),
         cmd_args.clone(),
         stdin_input.clone(),
         redraw_tx.clone(),
         query_rx,
     );
+    let mut ui_prompt = UiPrompt::new(query_tx);
+    let mut print_to_stdout = false;
 
-    {
-        let mut print_to_stdout = false;
-        let mut ui_prompt = UiPrompt::new(query_tx);
-
-        terminal::TerminalRenderer::new(
-            vec![
-                terminal::Component::Prompt(&mut ui_prompt),
-                terminal::Component::Data(&mut ui_waiting_process),
-            ],
-            redraw_rx,
-        )?
-        .start(|input| match input {
-            terminal::TerminalInput::Ctrl(ch) => match *ch {
-                // enter
-                b'm' => {
-                    print_to_stdout = true;
-                    true
-                }
-                // c-c
-                b'c' => true,
-                _ => false,
-            },
+    terminal::TerminalRenderer::new(
+        vec![
+            terminal::Component::Prompt(&mut ui_prompt),
+            terminal::Component::Data(&mut ui_waiting_process),
+        ],
+        redraw_rx,
+    )?
+    .start(|input| match input {
+        terminal::TerminalInput::Ctrl(ch) => match *ch {
+            // enter
+            b'm' => {
+                print_to_stdout = true;
+                true
+            }
+            // c-c
+            b'c' => true,
             _ => false,
-        })?;
+        },
+        _ => false,
+    })?;
 
-        if print_to_stdout {
-            pipe_cmd_stdout(cmd, cmd_args, stdin_input, ui_prompt.get_string())?;
-        }
+    if print_to_stdout {
+        pipe_cmd_stdout(cmd, cmd_args, stdin_input, ui_prompt.get_string())?;
     }
 
-    // to join this, ui prompt needs to be dropped
-    ui_waiting_process_handle.join().unwrap();
     Ok(())
 }
 
