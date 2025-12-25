@@ -240,6 +240,7 @@ fn main_err() -> Result<()> {
     );
 
     {
+        let mut print_to_stdout = false;
         let mut ui_prompt = UiPrompt::new(query_tx);
 
         terminal::TerminalRenderer::new(
@@ -251,14 +252,21 @@ fn main_err() -> Result<()> {
         )?
         .start(|input| match input {
             terminal::TerminalInput::Ctrl(ch) => match *ch {
-                b'm' => true,
+                // enter
+                b'm' => {
+                    print_to_stdout = true;
+                    true
+                }
+                // c-c
                 b'c' => true,
                 _ => false,
             },
             _ => false,
         })?;
 
-        pipe_cmd_stdout(cmd, cmd_args, stdin_input, ui_prompt.get_string())?;
+        if print_to_stdout {
+            pipe_cmd_stdout(cmd, cmd_args, stdin_input, ui_prompt.get_string())?;
+        }
     }
 
     // to join this, ui prompt needs to be dropped

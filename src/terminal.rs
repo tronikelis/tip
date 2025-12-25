@@ -395,7 +395,7 @@ impl<'a> TerminalRenderer<'a> {
         Ok(())
     }
 
-    pub fn start(mut self, stop: impl Fn(&TerminalInput) -> bool) -> Result<()> {
+    pub fn start(mut self, mut stop: impl FnMut(&TerminalInput) -> bool) -> Result<()> {
         loop {
             self.rerender()?;
             match self
