@@ -129,6 +129,16 @@ impl TerminalWriter {
         Ok(())
     }
 
+    fn hide_cursor(&mut self) -> Result<()> {
+        self.write("\x1b[?25l".as_bytes())?;
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> Result<()> {
+        self.write("\x1b[?25h".as_bytes())?;
+        Ok(())
+    }
+
     fn newline_start(&mut self) -> Result<()> {
         self.write("\r\n".as_bytes())?;
         Ok(())
@@ -386,6 +396,7 @@ impl<'a> TerminalRenderer<'a> {
 
     fn rerender(&mut self) -> Result<()> {
         self.terminal_writer.clear()?;
+        self.terminal_writer.hide_cursor()?;
 
         let rendered = self
             .components
@@ -406,6 +417,7 @@ impl<'a> TerminalRenderer<'a> {
 
         self.terminal_writer
             .move_cursor(state.cursor_line, state.cursor_col)?;
+        self.terminal_writer.show_cursor()?;
 
         self.terminal_writer.flush()?;
 

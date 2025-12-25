@@ -164,7 +164,7 @@ impl UiWaitingProcess {
     ) -> Result<()> {
         let mut has_read = false;
         loop {
-            let mut buf = [0; 1 << 10];
+            let mut buf = [0; 1 << 13];
             let size = stream.read(&mut buf)?;
             if size == 0 {
                 break;
