@@ -429,8 +429,7 @@ impl<'a> TerminalRenderer<'a> {
 
             let mut cap = line.len();
             if (left_lines - takes_up_lines as isize) < 0 {
-                let delta_lines = left_lines.abs_diff(takes_up_lines as isize);
-                cap = (self.size.ws_col as usize * delta_lines).min(line.len());
+                cap = (self.size.ws_col as usize * left_lines as usize).min(line.len());
             }
             left_lines -= takes_up_lines as isize;
 
