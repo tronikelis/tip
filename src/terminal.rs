@@ -264,7 +264,7 @@ enum ComponentRenderOut {
 pub struct ComponentDataOut(pub Vec<u8>);
 
 pub struct ComponentPromptOut {
-    pub query: String,
+    pub query: Vec<char>,
     pub cursor_index: usize,
 }
 
@@ -370,6 +370,15 @@ impl<'a> TerminalRenderer<'a> {
         self.size = self.terminal_writer.size();
     }
 
+    fn window_str(source: &[char], size: usize, index: usize) -> &[char] {
+        if index < size {
+            let end = size.min(source.len());
+            return &source[..end];
+        }
+
+        &source[(index - size)..index]
+    }
+
     fn render_component_prompt(
         &mut self,
         out: ComponentPromptOut,
@@ -382,13 +391,9 @@ impl<'a> TerminalRenderer<'a> {
         cols -= chevron.len();
         self.terminal_writer.write(chevron)?;
 
-        if out.query.len() <= cols {
-            self.terminal_writer.write(out.query.as_bytes())?;
-        } else {
-            let offset = out.query.len() - cols;
-            self.terminal_writer
-                .write(out.query.as_str()[offset..].as_bytes())?;
-        }
+        let window = Self::window_str(&out.query, cols, out.cursor_index);
+        self.terminal_writer
+            .write(window.iter().collect::<String>().as_bytes())?;
 
         state.cursor_line = 1;
         state.cursor_col = out.cursor_index + chevron.len() + 1;

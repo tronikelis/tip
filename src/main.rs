@@ -97,7 +97,7 @@ impl terminal::ComponentPrompt for UiPrompt {
     fn render(&self) -> terminal::ComponentPromptOut {
         terminal::ComponentPromptOut {
             cursor_index: self.cursor_index,
-            query: self.get_string(),
+            query: self.query.clone(),
         }
     }
 
