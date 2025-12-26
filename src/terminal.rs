@@ -411,17 +411,15 @@ impl<'a> TerminalRenderer<'a> {
         self.terminal_writer
             .write("─".repeat(self.size.ws_col as usize).as_bytes())?;
 
-        let as_string = unsafe { String::from_utf8_unchecked(out.0) };
-
-        let mut lines = as_string.split("\n");
+        let mut lines = out.0.split(|v| *v == b'\n');
         let mut left_lines = state.left_lines as isize;
         while left_lines > 0 {
             let Some(line) = lines.next() else { break };
             let line = line
-                .to_string()
-                .chars()
-                .filter(|v| *v != '\r')
-                .collect::<String>();
+                .into_iter()
+                .filter(|v| **v != b'\r')
+                .map(|v| *v)
+                .collect::<Vec<u8>>();
 
             let takes_up_lines = (line.len() as f32 / self.size.ws_col as f32)
                 .ceil()
@@ -434,7 +432,7 @@ impl<'a> TerminalRenderer<'a> {
             left_lines -= takes_up_lines as isize;
 
             self.terminal_writer.newline_start()?;
-            self.terminal_writer.write(line[..cap].as_bytes())?;
+            self.terminal_writer.write(&line[..cap])?;
         }
         state.left_lines = left_lines.max(0) as usize;
 
