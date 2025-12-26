@@ -242,6 +242,33 @@ impl terminal::ComponentData for UiWaitingProcess {
     }
 }
 
+fn pipe_cmd_stdout(
+    cmd: &str,
+    args: &[String],
+    query: &str,
+    input: Option<sync::Arc<Vec<u8>>>,
+) -> Result<()> {
+    let mut command = create_command(cmd, args, query, &input);
+    let mut child = command.spawn()?;
+
+    let stdin_handle = input.map(|input| {
+        thread::spawn({
+            let mut stdin = child.stdin.take().unwrap();
+            move || {
+                let _ = stdin.write_all(&input);
+            }
+        })
+    });
+
+    io::copy(&mut child.stdout.take().unwrap(), &mut io::stdout())?;
+
+    if let Some(stdin_handle) = stdin_handle {
+        stdin_handle.join().unwrap();
+    }
+
+    Ok(())
+}
+
 fn main_err() -> Result<()> {
     let stdin_input = {
         let mut stdin_input = None;
@@ -300,33 +327,6 @@ fn main_err() -> Result<()> {
 
     if print_to_stdout {
         pipe_cmd_stdout(&cmd, &cmd_args, &ui_prompt.get_string(), stdin_input)?;
-    }
-
-    Ok(())
-}
-
-fn pipe_cmd_stdout(
-    cmd: &str,
-    args: &[String],
-    query: &str,
-    input: Option<sync::Arc<Vec<u8>>>,
-) -> Result<()> {
-    let mut command = create_command(cmd, args, query, &input);
-    let mut child = command.spawn()?;
-
-    let stdin_handle = input.map(|input| {
-        thread::spawn({
-            let mut stdin = child.stdin.take().unwrap();
-            move || {
-                let _ = stdin.write_all(&input);
-            }
-        })
-    });
-
-    io::copy(&mut child.stdout.take().unwrap(), &mut io::stdout())?;
-
-    if let Some(stdin_handle) = stdin_handle {
-        stdin_handle.join().unwrap();
     }
 
     Ok(())
