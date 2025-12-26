@@ -417,6 +417,11 @@ impl<'a> TerminalRenderer<'a> {
         let mut left_lines = state.left_lines as isize;
         while left_lines > 0 {
             let Some(line) = lines.next() else { break };
+            let line = line
+                .to_string()
+                .chars()
+                .filter(|v| *v != '\r')
+                .collect::<String>();
 
             let takes_up_lines = (line.len() as f32 / self.size.ws_col as f32)
                 .ceil()
