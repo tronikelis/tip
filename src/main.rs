@@ -43,6 +43,35 @@ impl UiPrompt {
         self.cursor_index = cursor_index.max(0).min(self.query.len() as isize) as usize;
     }
 
+    fn is_word_char(ch: char) -> bool {
+        ch.is_alphanumeric()
+    }
+
+    fn move_cursor_word(&mut self, range: impl Iterator<Item = usize>) {
+        let mut seen_normal = false;
+        for i in range {
+            self.cursor_index = i;
+
+            let Some(ch) = self.query.get(i) else {
+                continue;
+            };
+            let is_word = Self::is_word_char(*ch);
+            seen_normal = if seen_normal { true } else { is_word };
+
+            if !is_word && seen_normal {
+                return;
+            }
+        }
+    }
+
+    fn move_cursor_word_forward(&mut self) {
+        self.move_cursor_word(self.cursor_index..=self.query.len());
+    }
+
+    fn move_cursor_word_backward(&mut self) {
+        self.move_cursor_word((0..=self.cursor_index).rev());
+    }
+
     fn add_character(&mut self, ch: char) -> Result<()> {
         self.query.insert(self.cursor_index, ch);
         self.cursor_index += 1;
@@ -83,6 +112,8 @@ impl terminal::ComponentPrompt for UiPrompt {
             terminal::TerminalInput::Escape(escape) => match escape {
                 terminal::TerminalEscape::LeftArrow => self.move_cursor(-1),
                 terminal::TerminalEscape::RightArrow => self.move_cursor(1),
+                terminal::TerminalEscape::CtrlLeftArrow => self.move_cursor_word_backward(),
+                terminal::TerminalEscape::CtrlRightArrow => self.move_cursor_word_forward(),
                 _ => {}
             },
             _ => {}

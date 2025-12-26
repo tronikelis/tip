@@ -20,6 +20,8 @@ macro_rules! onerr {
 pub enum TerminalEscape {
     LeftArrow,
     RightArrow,
+    CtrlLeftArrow,
+    CtrlRightArrow,
     Timeout,
 }
 
@@ -65,35 +67,60 @@ impl TerminalReader {
         }
     }
 
+    // https://en.wikipedia.org/wiki/ANSI_escape_code#Control_Sequence_Introducer_commands
+    // For Control Sequence Introducer, or CSI, commands, the ESC [ (written as \e[, \x1b[ or \033[ in several programming languages)
+    // is followed by any number (including none) of "parameter bytes" in the range 0x30–0x3F (ASCII 0–9:;<=>?),
+    // then by any number of "intermediate bytes" in the range 0x20–0x2F (ASCII space and !"#$%&'()*+, -./),
+    // then finally by a single "final byte" in the range 0x40–0x7E (ASCII @A–Z[\]^_`a–z{|}~)
+    //
+    // All common sequences just use the parameters as a series of semicolon-separated numbers such as 1;2;3.
+    // Missing numbers are treated as 0 (1;;3 acts like the middle number is 0, and no parameters at all in ESC[m acts like a 0 reset code).
+    // Some sequences (such as CUU) treat 0 as 1 in order to make missing parameters useful.
+    fn read_escape_to_end(&mut self) -> Result<String> {
+        let mut string = String::new();
+        loop {
+            let read = self.read_u8()?;
+            string.push(read as char);
+            if (0x40..=0x7e).contains(&read) {
+                break;
+            }
+        }
+        Ok(string)
+    }
+
     // ^[
-    fn read_escape(&mut self) -> Result<TerminalEscape> {
+    fn read_escape(&mut self) -> Result<Option<TerminalEscape>> {
         let Some(next) = self.read_u8_timeout(50)? else {
-            return Ok(TerminalEscape::Timeout);
+            return Ok(Some(TerminalEscape::Timeout));
         };
         if next != b'[' {
             return Err(anyhow!("unexpected: {:x}", next));
         };
 
-        match self.read_u8()? {
-            b'D' => return Ok(TerminalEscape::LeftArrow),
-            b'C' => return Ok(TerminalEscape::RightArrow),
-            _ => todo!(),
-        }
+        let escape = self.read_escape_to_end()?;
+
+        Ok(match escape.as_str() {
+            "D" => Some(TerminalEscape::LeftArrow),
+            "C" => Some(TerminalEscape::RightArrow),
+            "1;5D" => Some(TerminalEscape::CtrlLeftArrow),
+            "1;5C" => Some(TerminalEscape::CtrlRightArrow),
+            _ => None,
+        })
     }
 
     pub fn read_input(&mut self) -> Result<Option<TerminalInput>> {
         let mut buf = [0];
         match self.tty.read(&mut buf)? {
             0 => Ok(None),
-            _ => Ok(Some(match buf[0] {
-                0x1b => TerminalInput::Escape(self.read_escape()?),
+            _ => Ok(match buf[0] {
+                0x1b => self.read_escape()?.map(|v| TerminalInput::Escape(v)),
                 0x9B => todo!(),
                 0x90 => todo!(),
                 0x9D => todo!(),
-                0x7F => TerminalInput::Delete,
-                1..=26 => TerminalInput::Ctrl(97 + buf[0] - 1),
-                x => TerminalInput::Printable(x),
-            })),
+                0x7F => Some(TerminalInput::Delete),
+                1..=26 => Some(TerminalInput::Ctrl(97 + buf[0] - 1)),
+                x => Some(TerminalInput::Printable(x)),
+            }),
         }
     }
 }
@@ -308,13 +335,10 @@ impl<'a> TerminalRenderer<'a> {
             move || {
                 loop {
                     let input = terminal_reader.read_input().unwrap();
-                    match input {
-                        Some(input) => {
-                            onerr!(event_tx.send(TerminalRendererEvent::Input(input)), {
-                                break;
-                            });
-                        }
-                        None => break,
+                    if let Some(input) = input {
+                        onerr!(event_tx.send(TerminalRendererEvent::Input(input)), {
+                            break;
+                        });
                     }
                 }
             }
