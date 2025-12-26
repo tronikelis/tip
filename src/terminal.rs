@@ -384,12 +384,26 @@ impl<'a> TerminalRenderer<'a> {
 
         let as_string = unsafe { String::from_utf8_unchecked(out.0) };
 
-        for line in as_string.split("\n").take(state.left_lines as usize) {
+        let mut lines = as_string.split("\n");
+        let mut left_lines = state.left_lines as isize;
+        while left_lines > 0 {
+            let Some(line) = lines.next() else { break };
+
+            let takes_up_lines = (line.len() as f32 / self.size.ws_col as f32)
+                .ceil()
+                .max(1.0) as usize;
+
+            let mut cap = line.len();
+            if (left_lines - takes_up_lines as isize) < 0 {
+                let delta_lines = left_lines.abs_diff(takes_up_lines as isize);
+                cap = (self.size.ws_col as usize * delta_lines).min(line.len());
+            }
+            left_lines -= takes_up_lines as isize;
+
             self.terminal_writer.newline_start()?;
-            let max_len = line.len().min(self.size.ws_col as usize);
-            self.terminal_writer.write(line[0..max_len].as_bytes())?;
+            self.terminal_writer.write(line[..cap].as_bytes())?;
         }
-        state.left_lines = 0;
+        state.left_lines = left_lines.max(0) as usize;
 
         Ok(())
     }
