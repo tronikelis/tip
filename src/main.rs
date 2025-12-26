@@ -287,7 +287,9 @@ fn main_err() -> Result<()> {
     };
     let cmd_args = env::args().skip(2).collect::<Vec<_>>();
 
-    let (query_tx, query_rx) = sync::mpsc::channel(); // todo: figure out how to do this sync
+    // todo: figure out how to do this sync
+    // there is a deadlock between query_rx, query_tx, redraw_tx
+    let (query_tx, query_rx) = sync::mpsc::channel();
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
 
     let mut ui_waiting_process = UiWaitingProcess::new(
