@@ -409,7 +409,7 @@ impl<'a> TerminalRenderer<'a> {
         self.terminal_writer.newline_start()?;
         state.left_lines -= 1;
         self.terminal_writer
-            .write("-".repeat(self.size.ws_col as usize).as_bytes())?;
+            .write("─".repeat(self.size.ws_col as usize).as_bytes())?;
 
         let as_string = unsafe { String::from_utf8_unchecked(out.0) };
 
