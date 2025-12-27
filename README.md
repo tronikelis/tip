@@ -6,7 +6,12 @@ A simple cli utility to interactively run other tools, e.g `jq`
 
 ## Demo
 
-Here im launching `jq` with some arbitrary input
+<details>
+    <summary> `cat test.json | tip jq` </summary>
+    <a href="https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW" target="_blank"><img src="https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW.svg" /></a>
+</details>
 
-[![asciicast](https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW.svg)](https://asciinema.org/a/wCabNC1Kx778tClIPkBslyGSW)
-
+<details>
+    <summary> `tip rg` </summary>
+    <a href="https://asciinema.org/a/WBuEhSCzVfHHcbJ8jwmOiALEj" target="_blank"><img src="https://asciinema.org/a/WBuEhSCzVfHHcbJ8jwmOiALEj.svg" /></a>
+</details>
