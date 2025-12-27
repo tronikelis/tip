@@ -22,11 +22,13 @@ struct UiPrompt {
     cursor_index: usize,
     query: Vec<char>,
     tx: sync::mpsc::Sender<String>,
+    cmd: String,
 }
 
 impl UiPrompt {
-    fn new(tx: sync::mpsc::Sender<String>) -> Self {
+    fn new(tx: sync::mpsc::Sender<String>, cmd: String) -> Self {
         Self {
+            cmd,
             cursor_index: 0,
             query: Vec::new(),
             tx,
@@ -96,8 +98,10 @@ impl UiPrompt {
 impl terminal::ComponentPrompt for UiPrompt {
     fn render(&self) -> terminal::ComponentPromptOut {
         terminal::ComponentPromptOut {
-            cursor_index: self.cursor_index,
-            query: self.query.clone(),
+            cursor_index: self.cursor_index + self.cmd.len() + 4,
+            query: format!("[{}]> {}", self.cmd, self.query.iter().collect::<String>())
+                .chars()
+                .collect(),
         }
     }
 
@@ -340,7 +344,13 @@ fn main_err() -> Result<i32> {
         redraw_tx.clone(),
         query_rx,
     );
-    let mut ui_prompt = UiPrompt::new(query_tx);
+    let mut ui_prompt = UiPrompt::new(query_tx, {
+        let mut ui_cmd = vec![cmd.clone()];
+        if !cmd_args.is_empty() {
+            ui_cmd.push(cmd_args.join(" "))
+        };
+        ui_cmd.join(" ")
+    });
     let mut print_to_stdout = false;
 
     terminal::TerminalRenderer::new(

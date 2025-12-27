@@ -389,17 +389,12 @@ impl<'a> TerminalRenderer<'a> {
     ) -> Result<()> {
         state.left_lines -= 1;
 
-        let mut cols = self.size.ws_col as usize;
-        let chevron = "> ".as_bytes();
-        cols -= chevron.len();
-        self.terminal_writer.write(chevron)?;
-
-        let window = Self::window_str(&out.query, cols, out.cursor_index);
+        let window = Self::window_str(&out.query, self.size.ws_col as usize, out.cursor_index);
         self.terminal_writer
             .write(window.iter().collect::<String>().as_bytes())?;
 
         state.cursor_line = 1;
-        state.cursor_col = out.cursor_index + chevron.len() + 1;
+        state.cursor_col = out.cursor_index + 1;
 
         Ok(())
     }
