@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     mem,
     os::fd::AsRawFd,
-    sync, thread,
+    sync, thread, time,
 };
 
 macro_rules! onerr {
@@ -348,9 +348,12 @@ impl<'a> TerminalRenderer<'a> {
         thread::spawn({
             let event_tx = event_tx.clone();
             move || {
+                let throttle = Throttle::new(move || {
+                    let _ = event_tx.send(TerminalRendererEvent::Redraw);
+                });
                 loop {
                     onerr!(redraw_rx.recv(), { break });
-                    onerr!(event_tx.send(TerminalRendererEvent::Redraw), { break });
+                    throttle.call();
                 }
             }
         });
@@ -497,5 +500,65 @@ impl<'a> TerminalRenderer<'a> {
         }
 
         Ok(())
+    }
+}
+
+struct Throttle {
+    handle: Option<thread::JoinHandle<()>>,
+    should_fire: sync::Arc<sync::atomic::AtomicBool>,
+    dropped: sync::Arc<sync::atomic::AtomicBool>,
+}
+
+impl Throttle {
+    fn new(func: impl Fn() + Send + 'static) -> Self {
+        let should_fire = sync::Arc::new(sync::atomic::AtomicBool::new(false));
+        let dropped = sync::Arc::new(sync::atomic::AtomicBool::new(false));
+
+        let handle = thread::spawn({
+            let should_fire = should_fire.clone();
+            let dropped = dropped.clone();
+            move || {
+                loop {
+                    thread::sleep(time::Duration::from_millis(16));
+
+                    if dropped.load(sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+
+                    while should_fire.load(sync::atomic::Ordering::Relaxed) {
+                        if should_fire
+                            .compare_exchange(
+                                true,
+                                false,
+                                sync::atomic::Ordering::Relaxed,
+                                sync::atomic::Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            func();
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Self {
+            handle: Some(handle),
+            should_fire,
+            dropped,
+        }
+    }
+
+    fn call(&self) {
+        self.should_fire
+            .store(true, sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for Throttle {
+    fn drop(&mut self) {
+        self.dropped.store(true, sync::atomic::Ordering::Relaxed);
+        self.handle.take().unwrap().join().unwrap();
     }
 }
