@@ -273,34 +273,44 @@ impl terminal::ComponentData for UiWaitingProcess {
     }
 }
 
-fn pipe_cmd_stdout(
+fn pipe_cmd(
     cmd: &str,
     args: &[String],
     query: &str,
     input: Option<sync::Arc<Vec<u8>>>,
-) -> Result<()> {
+) -> Result<process::ExitStatus> {
     let mut command = create_command(cmd, args, query, &input);
     let mut child = command.spawn()?;
 
     let stdin_handle = input.map(|input| {
         thread::spawn({
             let mut stdin = child.stdin.take().unwrap();
-            move || {
-                let _ = stdin.write_all(&input);
-            }
+            move || stdin.write_all(&input)
         })
     });
 
-    io::copy(&mut child.stdout.take().unwrap(), &mut io::stdout())?;
+    let stdout_handle = thread::spawn({
+        let mut stdout = child.stdout.take().unwrap();
+        move || io::copy(&mut stdout, &mut io::stdout())
+    });
+
+    let stderr_handle = thread::spawn({
+        let mut stderr = child.stderr.take().unwrap();
+        move || io::copy(&mut stderr, &mut io::stderr())
+    });
+
+    let exit_status = child.wait()?;
 
     if let Some(stdin_handle) = stdin_handle {
-        stdin_handle.join().unwrap();
+        let _ = stdin_handle.join().unwrap();
     }
+    let _ = stdout_handle.join().unwrap();
+    let _ = stderr_handle.join().unwrap();
 
-    Ok(())
+    Ok(exit_status)
 }
 
-fn main_err() -> Result<()> {
+fn main_err() -> Result<i32> {
     let stdin_input = {
         let mut stdin_input = None;
         if !terminal::isatty(libc::STDIN_FILENO) {
@@ -359,15 +369,22 @@ fn main_err() -> Result<()> {
     })?;
 
     if print_to_stdout {
-        pipe_cmd_stdout(&cmd, &cmd_args, &ui_prompt.get_string(), stdin_input)?;
+        return Ok(
+            pipe_cmd(&cmd, &cmd_args, &ui_prompt.get_string(), stdin_input)?
+                .code()
+                .unwrap_or(2),
+        );
     }
 
-    Ok(())
+    Ok(0)
 }
 
 fn main() {
-    if let Err(err) = main_err() {
-        eprintln!("{}", err);
-        process::exit(1);
-    }
+    match main_err() {
+        Ok(v) => process::exit(v),
+        Err(err) => {
+            eprintln!("{}", err);
+            process::exit(1);
+        }
+    };
 }
