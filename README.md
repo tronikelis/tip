@@ -7,11 +7,11 @@ A simple cli utility to interactively run other tools, e.g `jq`
 ## Demo
 
 <details>
-    <summary>cat test.json | tip jq</summary>
-    <img src="demo/jq.gif" />
+    <summary>curl ... | tip jq</summary>
+    <img src="static/jq.gif" />
 </details>
 
 <details>
     <summary>tip rg</summary>
-    <img src="demo/rg.gif" />
+    <img src="static/rg.gif" />
 </details>
