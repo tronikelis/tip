@@ -10,6 +10,16 @@ A simple cli utility to interactively run other tools, e.g `jq`
 Usage: tip <program> [arguments]
 ```
 
+## Install
+
+To install you will have to build from source,
+therefore a rust toolchain is required
+
+```
+git clone https://github.com/tronikelis/tip
+cd tip && cargo install --path .
+```
+
 ## Demo
 
 <details>
