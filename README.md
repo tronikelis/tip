@@ -4,6 +4,12 @@ Or `tip` for short.
 
 A simple cli utility to interactively run other tools, e.g `jq`
 
+## Usage
+
+```
+Usage: tip <program> [arguments]
+```
+
 ## Demo
 
 <details>

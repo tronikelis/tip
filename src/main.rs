@@ -8,6 +8,8 @@ use std::{
 mod child;
 mod terminal;
 
+static HELP: &str = "Usage: tip <program> [ARGUMENTS]";
+
 macro_rules! onerr {
     ($e:expr, $s:block) => {{
         match $e {
@@ -328,7 +330,7 @@ fn main_err() -> Result<i32> {
     };
 
     let Some(cmd) = env::args().skip(1).next() else {
-        return Err(anyhow!("expected first argument to be command".to_string()));
+        return Err(anyhow!(HELP));
     };
     let cmd_args = env::args().skip(2).collect::<Vec<_>>();
 
