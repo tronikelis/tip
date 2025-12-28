@@ -1,5 +1,7 @@
 # Tronikel's interactive process
 
+![main_demo](assets/main.gif)
+
 Or `tip` for short.
 
 A simple cli utility to interactively run other tools, e.g `jq`
