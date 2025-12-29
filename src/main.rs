@@ -329,10 +329,10 @@ fn main_err() -> Result<i32> {
         stdin_input
     };
 
-    let Some(cmd) = env::args().skip(1).next() else {
+    let Some(bin) = env::args().skip(1).next() else {
         return Err(anyhow!(HELP));
     };
-    let cmd_args = env::args().skip(2).collect::<Vec<_>>();
+    let bin_args = env::args().skip(2).collect::<Vec<_>>();
 
     // todo: figure out how to do this sync
     // there is a deadlock between query_rx, query_tx, redraw_tx
@@ -340,19 +340,20 @@ fn main_err() -> Result<i32> {
     let (redraw_tx, redraw_rx) = sync::mpsc::sync_channel(0);
 
     let mut ui_waiting_process = UiWaitingProcess::new(
-        cmd.clone(),
-        cmd_args.clone(),
+        bin.clone(),
+        bin_args.clone(),
         stdin_input.clone(),
         redraw_tx.clone(),
         query_rx,
     );
-    let mut ui_prompt = UiPrompt::new(query_tx, {
-        let mut ui_cmd = vec![cmd.clone()];
-        if !cmd_args.is_empty() {
-            ui_cmd.push(cmd_args.join(" "))
+    let cmd = {
+        let mut cmd = vec![bin.clone()];
+        if !bin_args.is_empty() {
+            cmd.push(bin_args.join(" "))
         };
-        ui_cmd.join(" ")
-    });
+        cmd.join(" ")
+    };
+    let mut ui_prompt = UiPrompt::new(query_tx, cmd.clone());
     let mut print_to_stdout = false;
 
     terminal::TerminalRenderer::new(
@@ -380,12 +381,15 @@ fn main_err() -> Result<i32> {
         _ => false,
     })?;
 
+    let ui_prompt_string = ui_prompt.get_string();
+    if !ui_prompt_string.is_empty() {
+        eprintln!("{} {}", &cmd, &ui_prompt_string);
+    }
+
     if print_to_stdout {
-        return Ok(
-            pipe_cmd(&cmd, &cmd_args, &ui_prompt.get_string(), stdin_input)?
-                .code()
-                .unwrap_or(2),
-        );
+        return Ok(pipe_cmd(&bin, &bin_args, &ui_prompt_string, stdin_input)?
+            .code()
+            .unwrap_or(2));
     }
 
     Ok(0)
