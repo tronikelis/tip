@@ -514,7 +514,7 @@ impl Throttle {
             let dropped = dropped.clone();
             move || {
                 loop {
-                    thread::sleep(time::Duration::from_millis(16));
+                    thread::sleep(time::Duration::from_millis(30));
 
                     if dropped.load(sync::atomic::Ordering::Relaxed) {
                         break;
