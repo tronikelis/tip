@@ -354,7 +354,7 @@ fn main_err() -> Result<i32> {
         cmd.join(" ")
     };
     let mut ui_prompt = UiPrompt::new(query_tx, cmd.clone());
-    let mut print_to_stdout = false;
+    let mut pressed_enter = false;
 
     terminal::TerminalRenderer::new(
         vec![
@@ -367,7 +367,7 @@ fn main_err() -> Result<i32> {
         terminal::TerminalInput::Ctrl(ch) => match ch {
             // enter
             b'm' => {
-                print_to_stdout = true;
+                pressed_enter = true;
                 true
             }
             // c-c
@@ -381,12 +381,12 @@ fn main_err() -> Result<i32> {
         _ => false,
     })?;
 
-    let ui_prompt_string = ui_prompt.get_string();
-    if !ui_prompt_string.is_empty() {
-        eprintln!("{} {}", &cmd, &ui_prompt_string);
-    }
+    if pressed_enter {
+        let ui_prompt_string = ui_prompt.get_string();
+        if !ui_prompt_string.is_empty() {
+            eprintln!("{} {}", &cmd, &ui_prompt_string);
+        }
 
-    if print_to_stdout {
         return Ok(pipe_cmd(&bin, &bin_args, &ui_prompt_string, stdin_input)?
             .code()
             .unwrap_or(2));
