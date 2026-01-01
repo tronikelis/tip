@@ -67,6 +67,10 @@ impl TerminalReader {
         }
     }
 
+    fn is_escape_end(ch: u8) -> bool {
+        (0x40..=0x7e).contains(&ch)
+    }
+
     // https://en.wikipedia.org/wiki/ANSI_escape_code#Control_Sequence_Introducer_commands
     // For Control Sequence Introducer, or CSI, commands, the ESC [ (written as \e[, \x1b[ or \033[ in several programming languages)
     // is followed by any number (including none) of "parameter bytes" in the range 0x30–0x3F (ASCII 0–9:;<=>?),
@@ -81,7 +85,7 @@ impl TerminalReader {
         loop {
             let read = self.read_u8()?;
             string.push(read as char);
-            if (0x40..=0x7e).contains(&read) {
+            if Self::is_escape_end(read) {
                 break;
             }
         }
@@ -413,24 +417,24 @@ impl<'a> TerminalRenderer<'a> {
         let mut left_lines = state.left_lines as isize;
         while left_lines > 0 {
             let Some(line) = lines.next() else { break };
-            let line = line
-                .into_iter()
-                .filter(|v| **v != b'\r')
-                .map(|v| *v)
-                .collect::<Vec<u8>>();
+            let escaped_vec = EscapedVec::new(
+                line.iter()
+                    .filter(|v| **v != b'\r')
+                    .map(|v| *v)
+                    .collect::<Vec<u8>>(),
+            );
 
-            let takes_up_lines = (line.len() as f32 / self.size.ws_col as f32)
-                .ceil()
-                .max(1.0) as usize;
+            let len = escaped_vec.len();
+            let takes_up_lines = (len as f32 / self.size.ws_col as f32).ceil().max(1.0) as usize;
 
-            let mut cap = line.len();
+            let mut cap = len;
             if (left_lines - takes_up_lines as isize) < 0 {
-                cap = (self.size.ws_col as usize * left_lines as usize).min(line.len());
+                cap = self.size.ws_col as usize * left_lines as usize;
             }
             left_lines -= takes_up_lines as isize;
 
             self.terminal_writer.newline_start()?;
-            self.terminal_writer.write(&line[..cap])?;
+            self.terminal_writer.write(escaped_vec.cap(cap))?;
         }
         state.left_lines = left_lines.max(0) as usize;
 
@@ -555,5 +559,111 @@ impl Drop for Throttle {
     fn drop(&mut self) {
         self.dropped.store(true, sync::atomic::Ordering::Relaxed);
         self.handle.take().unwrap().join().unwrap();
+    }
+}
+
+struct EscapedIter<'a> {
+    index: usize,
+    chars: &'a [u8],
+    in_escape: bool,
+}
+
+impl<'a> EscapedIter<'a> {
+    fn new(chars: &'a [u8]) -> Self {
+        Self {
+            chars,
+            index: 0,
+            in_escape: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EscapedIterItem {
+    #[allow(dead_code)]
+    ch: u8,
+    in_escape: bool,
+}
+
+impl<'a> Iterator for EscapedIter<'a> {
+    type Item = EscapedIterItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some(ch) = self.chars.get(self.index) else {
+            return None;
+        };
+        self.index += 1;
+
+        let mut in_escape = self.in_escape;
+        if *ch == 0x1b {
+            self.in_escape = true;
+            in_escape = true;
+        } else if self.in_escape && *ch != b'[' {
+            if TerminalReader::is_escape_end(*ch) {
+                self.in_escape = false;
+            }
+        }
+
+        Some(EscapedIterItem { ch: *ch, in_escape })
+    }
+}
+
+struct EscapedVec {
+    unescaped: Vec<u8>,
+}
+
+impl EscapedVec {
+    fn new(unescaped: Vec<u8>) -> Self {
+        Self { unescaped }
+    }
+
+    fn len(&self) -> usize {
+        EscapedIter::new(&self.unescaped).fold(
+            0,
+            |acc, curr| {
+                if curr.in_escape { acc } else { acc + 1 }
+            },
+        )
+    }
+
+    fn cap(&self, cap: usize) -> &[u8] {
+        let mut len: usize = 0;
+        let mut real_len: usize = 0;
+
+        for v in EscapedIter::new(&self.unescaped) {
+            real_len += 1;
+            if v.in_escape {
+                continue;
+            }
+
+            len += 1;
+            if len >= cap {
+                break;
+            }
+        }
+
+        &self.unescaped[..real_len]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escaped_vec() {
+        let escaped_vec = EscapedVec::new(vec![
+            // 00000000: 1b5b 306d 1b5b 3335 6d52 4541 444d 452e  .[0m.[35mREADME.
+            0x1b, 0x5b, 0x30, 0x6d, 0x1b, 0x5b, 0x33, 0x35, 0x6d, 0x52, 0x45, 0x41, 0x44, 0x4d,
+            0x45, 0x2e,
+        ]);
+
+        assert_eq!(escaped_vec.len(), "README.".len());
+        assert_eq!(
+            escaped_vec.cap("READ".len()),
+            [
+                0x1b, b'[', b'0', b'm', 0x1b, b'[', b'3', b'5', b'm', b'R', b'E', b'A', b'D'
+            ]
+        );
     }
 }

@@ -384,7 +384,7 @@ fn main_err() -> Result<i32> {
     if pressed_enter {
         let ui_prompt_string = ui_prompt.get_string();
         if !ui_prompt_string.is_empty() {
-            eprintln!("{} {}", &cmd, &ui_prompt_string);
+            eprintln!("{} '{}'", &cmd, &ui_prompt_string);
         }
 
         return Ok(pipe_cmd(&bin, &bin_args, &ui_prompt_string, stdin_input)?
