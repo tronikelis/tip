@@ -215,7 +215,7 @@ unsafe fn enable_raw_mode(tty_fd: i32) -> libc::termios {
     unsafe { libc::cfmakeraw(raw_termios.as_mut_ptr()) };
     let raw_termios = unsafe { raw_termios.assume_init() };
 
-    unsafe { libc::tcsetattr(tty_fd, libc::TCSAFLUSH, &raw_termios) };
+    unsafe { libc::tcsetattr(tty_fd, libc::TCSANOW, &raw_termios) };
 
     original_termios
 }
