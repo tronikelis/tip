@@ -198,10 +198,11 @@ impl TerminalWriter {
 
 impl Drop for TerminalWriter {
     fn drop(&mut self) {
-        unsafe { libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original_termios) };
         if !self.debug {
             let _ = switch_to_normal_terminal(&mut self.tty);
         }
+        let _ = self.tty.flush();
+        unsafe { libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original_termios) };
     }
 }
 
