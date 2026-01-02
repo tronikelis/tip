@@ -142,6 +142,8 @@ impl TerminalWriter {
         let fd = tty.as_raw_fd();
         let mut tty = io::BufWriter::new(tty);
 
+        let original_termios = unsafe { enable_raw_mode(fd) };
+
         let debug = env::var("TIP_DEBUG").unwrap_or("".to_string()) == "true";
         if !debug {
             switch_to_alternate_terminal(&mut tty)?
@@ -150,7 +152,7 @@ impl TerminalWriter {
         Ok(Self {
             tty,
             fd,
-            original_termios: unsafe { enable_raw_mode(fd) },
+            original_termios,
             debug,
         })
     }
