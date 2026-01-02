@@ -181,7 +181,8 @@ impl TerminalWriter {
     }
 
     fn clear(&mut self) -> Result<()> {
-        self.write("\x1b[2J\x1b[H".as_bytes())
+        // reset cursor, reset colors, reset styles
+        self.write("\x1b[2J\x1b[H\x1b[39m\x1b[49m\x1b[0m".as_bytes())
     }
 
     fn move_cursor(&mut self, line: usize, column: usize) -> Result<()> {
