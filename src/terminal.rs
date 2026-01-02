@@ -196,9 +196,7 @@ impl TerminalWriter {
 
 impl Drop for TerminalWriter {
     fn drop(&mut self) {
-        unsafe {
-            disable_raw_mode(self.fd, self.original_termios);
-        }
+        unsafe { libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original_termios) };
         if !self.debug {
             let _ = switch_to_normal_terminal(&mut self.tty);
         }
@@ -228,10 +226,6 @@ fn switch_to_alternate_terminal<T: Write>(tty: &mut T) -> Result<()> {
 fn switch_to_normal_terminal<T: Write>(tty: &mut T) -> Result<()> {
     tty.write_all("\x1b[2J\x1b[H\x1b[?1049l".as_bytes())?;
     Ok(())
-}
-
-unsafe fn disable_raw_mode(tty_fd: i32, termios: libc::termios) {
-    unsafe { libc::tcsetattr(tty_fd, libc::TCSAFLUSH, &termios) };
 }
 
 pub fn isatty(fd: i32) -> bool {
